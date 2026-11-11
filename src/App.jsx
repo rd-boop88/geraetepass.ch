@@ -4,11 +4,11 @@ import React, { useState, useEffect, useRef } from 'react';
    geraetepass.ch – Demo-App (eine Datei, keine Zusatzpakete nötig)
 
    Aufbau dieser Datei:
-     1. Einstellungen (Passwort, Vorwarnzeit, Abteilungen, Logo)
+     1. Einstellungen (Passwort, Vorwarnzeit, Abteilungen, Logo, Grundstil)
      2. Icons
      3. Demo-Daten (Geräte, Mitarbeitende)
-     4. Hilfsfunktionen (Datum, Status, Quote)
-     5. Bausteine (Logo, Status, Fortschritt, Unterschriftsfeld)
+     4. Hilfsfunktionen (Datum, Status, Quote, Listen-Import aus Excel/CSV)
+     5. Bausteine (Logo, Status, Fortschritt, Fenster, Unterschriftsfeld)
      6. Ansichten (Passwort, Rollenwahl, Mitarbeitende, Stationsleitung, QM, Nachweis)
      7. App (Zustand und Aktionen)
    ========================================================================== */
@@ -30,6 +30,9 @@ const SESSION_KEY = 'geraetepass_entsperrt';
 
 // So viele Tage vor Ablauf wird eine Schulung als "bald fällig" markiert.
 const WARN_DAYS = 60;
+
+// Wiederholungs-Intervall in Monaten, wenn eine importierte Geräteliste keines angibt.
+const DEFAULT_INTERVAL = 12;
 
 const NON_MEDICAL = 'kein Medizinprodukt';
 const DEFAULT_INSTRUCTOR = 'M. Keller (Berufsbildner)';
@@ -62,6 +65,24 @@ const ui = {
   panel: 'rounded-2xl border border-slate-200 bg-white',
 };
 
+// Grundstil der Seite. Er überschreibt die Standard-Stile der Projektvorlage (schmaler,
+// zentrierter Inhalt mit dunklem Rand), damit die App das ganze Fenster nutzt.
+const BASE_CSS = [
+  ':root { font-size: 16px !important; line-height: 1.5 !important; letter-spacing: normal !important; color-scheme: light !important; background: #f1f5f9 !important; }',
+  'body { margin: 0 !important; display: block !important; min-width: 0 !important; background: #f1f5f9 !important; }',
+  '#root { display: block !important; width: 100% !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; text-align: left !important; }',
+  'h1, h2 { margin: 0; letter-spacing: inherit; }',
+].join('\n');
+if (typeof document !== 'undefined') {
+  let baseStyle = document.getElementById('gp-base-style');
+  if (!baseStyle) {
+    baseStyle = document.createElement('style');
+    baseStyle.id = 'gp-base-style';
+    document.head.appendChild(baseStyle);
+  }
+  baseStyle.textContent = BASE_CSS;
+}
+
 
 /* ==========================================================================
    2. ICONS (eingebaut, kein Zusatzpaket nötig)
@@ -90,7 +111,8 @@ const Alert = (p) => <Icon {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14
 const EmptySlot = (p) => <Icon {...p} dashed><circle cx="12" cy="12" r="9" /></Icon>;
 const Lock = (p) => <Icon {...p}><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></Icon>;
 const Swap = (p) => <Icon {...p}><path d="M8 3 4 7l4 4" /><path d="M4 7h16" /><path d="m16 21 4-4-4-4" /><path d="M20 17H4" /></Icon>;
-const Refresh = (p) => <Icon {...p}><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" /><path d="M3 21v-5h5" /></Icon>;
+const Upload = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><path d="M12 3v12" /></Icon>;
+const Download = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><path d="M12 15V3" /></Icon>;
 const Pencil = (p) => <Icon {...p}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></Icon>;
 const Close = (p) => <Icon {...p}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></Icon>;
 const Shield = (p) => <Icon {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></Icon>;
@@ -152,9 +174,6 @@ const INITIAL_DEVICES = [
   { id: 'd12', category: 'Ohr-Infrarot-Thermometer', model: 'TempScan 600', risk: 'I', interval: 36, vendor: 'BasicMed AG', depts: ['B'] },
   { id: 'd13', category: 'Medikamentenkühlschrank', model: 'CoolStore Med 120', risk: NON_MEDICAL, interval: 0, vendor: 'KlimaTech AG', depts: ['A', 'B'] },
 ];
-
-// Dieses Gerät kommt beim (simulierten) Inventar-Abgleich neu dazu.
-const SYNC_DEVICE = { id: 'd14', category: 'Notfallbeatmungsgerät', model: 'OxyMobile 3000', risk: 'IIb', interval: 12, vendor: 'MedTech Systems AG', isNew: true };
 
 // Ein Schulungsnachweis. Das Datum wird relativ zu heute gesetzt ("vor X Monaten"),
 // damit die Demo immer gleich aussieht, egal wann sie geöffnet wird.
@@ -238,7 +257,10 @@ const URGENCY = { expired: 0, missing: 1, dueSoon: 2, valid: 3 };
 
 const needsTraining = (device) => device.interval > 0;
 const deptById = (id) => DEPARTMENTS.find((d) => d.id === id);
-const riskText = (risk) => (risk === NON_MEDICAL ? 'Kein Medizinprodukt' : 'Klasse ' + risk);
+const riskText = (risk) => {
+  if (risk === NON_MEDICAL) return 'Kein Medizinprodukt';
+  return risk ? 'Klasse ' + risk : 'Klasse nicht angegeben';
+};
 
 // Der Status wird immer aus Schulungsdatum + Intervall berechnet (nie von Hand gesetzt).
 function getStatus(device, records) {
@@ -302,6 +324,324 @@ function useIsWide() {
   }, []);
   return wide;
 }
+
+
+/* ==========================================================================
+   4c. LISTEN IMPORTIEREN (.xlsx und .csv lesen, ohne Zusatzpaket)
+   ========================================================================== */
+
+// Text vergleichbar machen: klein, ohne Umlaute, ohne Leer- und Sonderzeichen
+const norm = (s) => String(s || '').toLowerCase()
+  .replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss')
+  .replace(/[^a-z0-9]/g, '');
+
+// Teile mit Komma verbinden, leere auslassen
+const parts = (...items) => items.filter(Boolean).join(', ');
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+
+async function inflate(bytes) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('BROWSER');
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Eine .xlsx-Datei ist ein ZIP-Archiv mit XML-Dateien. Hier wird das Archiv geöffnet.
+function openZip(buffer) {
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  let end = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 66000); i -= 1) {
+    if (view.getUint32(i, true) === 0x06054b50) { end = i; break; }
+  }
+  if (end < 0) throw new Error('FORMAT');
+  const count = view.getUint16(end + 10, true);
+  let pos = view.getUint32(end + 16, true);
+  const decoder = new TextDecoder('utf-8');
+  const files = {};
+  for (let n = 0; n < count; n += 1) {
+    if (view.getUint32(pos, true) !== 0x02014b50) throw new Error('FORMAT');
+    const method = view.getUint16(pos + 10, true);
+    const size = view.getUint32(pos + 20, true);
+    const nameLength = view.getUint16(pos + 28, true);
+    const extraLength = view.getUint16(pos + 30, true);
+    const commentLength = view.getUint16(pos + 32, true);
+    const local = view.getUint32(pos + 42, true);
+    const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLength));
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    files[name] = { method, data: bytes.subarray(start, start + size) };
+    pos += 46 + nameLength + extraLength + commentLength;
+  }
+  return {
+    names: Object.keys(files),
+    text: async (name) => {
+      const file = files[name];
+      if (file.method !== 0 && file.method !== 8) throw new Error('FORMAT');
+      return decoder.decode(file.method === 0 ? file.data : await inflate(file.data));
+    },
+  };
+}
+
+// Liest das erste Tabellenblatt einer .xlsx-Datei als Zeilen mit Textzellen.
+async function readXlsx(buffer) {
+  const zip = openZip(buffer);
+  const xml = async (name) => new DOMParser().parseFromString(await zip.text(name), 'application/xml');
+  const all = (node, tag) => Array.from(node.getElementsByTagNameNS('*', tag));
+  const find = (pattern) => zip.names.find((name) => pattern.test(name));
+
+  // Texte stehen gesammelt in einer eigenen Datei, die Zellen verweisen darauf
+  let strings = [];
+  const stringsFile = find(/^xl\/sharedStrings\.xml$/i);
+  if (stringsFile) {
+    strings = all(await xml(stringsFile), 'si').map((si) => all(si, 't')
+      .filter((t) => t.parentNode.localName !== 'rPh')
+      .map((t) => t.textContent).join(''));
+  }
+
+  // Erstes Tabellenblatt gemäss Arbeitsmappe suchen
+  let sheetFile = null;
+  const bookFile = find(/^xl\/workbook\.xml$/i);
+  const relsFile = find(/^xl\/_rels\/workbook\.xml\.rels$/i);
+  if (bookFile && relsFile) {
+    const first = all(await xml(bookFile), 'sheet')[0];
+    const relId = first ? Array.from(first.attributes).filter((a) => a.localName === 'id').map((a) => a.value)[0] : null;
+    const rel = all(await xml(relsFile), 'Relationship').find((r) => r.getAttribute('Id') === relId);
+    if (rel) {
+      const target = rel.getAttribute('Target') || '';
+      sheetFile = target.charAt(0) === '/' ? target.slice(1) : 'xl/' + target;
+    }
+  }
+  if (!sheetFile || zip.names.indexOf(sheetFile) < 0) sheetFile = zip.names.filter((n) => /^xl\/worksheets\/[^/]+\.xml$/i.test(n)).sort()[0];
+  if (!sheetFile) throw new Error('FORMAT');
+
+  const columnIndex = (ref) => {
+    let index = 0;
+    const letters = ref.replace(/[^A-Za-z]/g, '').toUpperCase();
+    for (let i = 0; i < letters.length; i += 1) index = index * 26 + (letters.charCodeAt(i) - 64);
+    return index - 1;
+  };
+
+  const rows = [];
+  all(await xml(sheetFile), 'row').forEach((row) => {
+    const cells = [];
+    all(row, 'c').forEach((cell, position) => {
+      const ref = cell.getAttribute('r');
+      const type = cell.getAttribute('t');
+      const valueNode = all(cell, 'v')[0];
+      let value = '';
+      if (type === 's') value = strings[Number(valueNode ? valueNode.textContent : -1)] || '';
+      else if (type === 'inlineStr') value = all(cell, 't').map((t) => t.textContent).join('');
+      else if (valueNode) value = valueNode.textContent;
+      cells[ref ? columnIndex(ref) : position] = String(value).trim();
+    });
+    rows.push(Array.from(cells, (value) => value || ''));
+  });
+  return rows;
+}
+
+// Liest eine CSV-Datei. Trennzeichen (Strichpunkt, Komma, Tabulator) wird erkannt.
+function readCsv(buffer) {
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch (e) {
+    text = new TextDecoder('windows-1252').decode(buffer); // ältere Excel-Exporte
+  }
+  text = text.replace(/^\uFEFF/, ''); // unsichtbares Startzeichen entfernen
+  const firstLine = text.split(/\r?\n/, 1)[0];
+  const delimiter = [';', '\t', ','].sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0];
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i += 1; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === delimiter) { row.push(cell.trim()); cell = ''; }
+    else if (ch === '\n') { row.push(cell.trim()); rows.push(row); row = []; cell = ''; }
+    else if (ch !== '\r') cell += ch;
+  }
+  if (cell !== '' || row.length > 0) { row.push(cell.trim()); rows.push(row); }
+  return rows;
+}
+
+// Liest eine hochgeladene Datei und gibt die nicht leeren Zeilen zurück.
+async function readTableFile(file) {
+  const buffer = await file.arrayBuffer();
+  const head = new Uint8Array(buffer.slice(0, 4));
+  let rows;
+  if (head[0] === 0x50 && head[1] === 0x4b) rows = await readXlsx(buffer); // "PK" = ZIP = .xlsx
+  else if (head[0] === 0xd0 && head[1] === 0xcf) throw new Error('XLS'); // altes Excel-Format
+  else rows = readCsv(buffer);
+  return rows.filter((row) => row.some((value) => value !== ''));
+}
+
+function importErrorText(error) {
+  const code = error && error.message;
+  if (code === 'XLS') return 'Das alte Excel-Format (.xls) wird nicht unterstützt. Bitte die Liste in Excel als .xlsx speichern.';
+  if (code === 'BROWSER') return 'Dieser Browser kann .xlsx-Dateien nicht lesen. Bitte die Liste als CSV speichern oder einen aktuellen Browser verwenden.';
+  return 'Die Datei konnte nicht gelesen werden. Unterstützt werden Excel-Dateien (.xlsx) und CSV.';
+}
+
+// Sucht die Kopfzeile und ordnet die Spalten den Feldern zu. Die Spaltennamen dürfen
+// variieren, z.B. "Modell", "Typ / Modell" oder "Typ". Kurze Namen müssen genau passen.
+function findColumns(rows, fields, anchors) {
+  let fallback = null;
+  for (let r = 0; r < Math.min(rows.length, 20); r += 1) {
+    const heads = rows[r].map(norm);
+    const cols = {};
+    const used = {};
+    fields.forEach((field) => {
+      for (let n = 0; n < field.names.length; n += 1) {
+        const name = field.names[n];
+        const index = heads.findIndex((head, i) => !used[i] && head && (name.length <= 3 ? head === name : head.indexOf(name) >= 0));
+        if (index >= 0) { cols[field.key] = index; used[index] = true; break; }
+      }
+    });
+    const labels = Object.keys(cols).map((key) => cols[key]).sort((a, b) => a - b).map((index) => '«' + rows[r][index] + '»');
+    const found = { headerRow: r, cols, labels };
+    const hasAnchor = anchors.some((key) => cols[key] !== undefined);
+    if (hasAnchor && Object.keys(cols).length >= 2) return found;
+    if (hasAnchor && !fallback) fallback = found;
+  }
+  return fallback;
+}
+
+const DEVICE_FIELDS = [
+  { key: 'category', names: ['geratetyp', 'gerateart', 'geratekategorie', 'kategorie', 'anlagenbezeichnung', 'bezeichnung', 'anlage', 'gerat'] },
+  { key: 'vendor', names: ['hersteller', 'lieferant', 'firma', 'marke'] },
+  { key: 'risk', names: ['risikoklasse', 'risiko', 'klasse'] },
+  { key: 'interval', names: ['intervall', 'wiederholung', 'turnus', 'monate'] },
+  { key: 'model', names: ['modell', 'model', 'typ', 'produkt', 'name'] },
+];
+
+const STAFF_FIELDS = [
+  { key: 'persNo', names: ['personalnummer', 'personalnr', 'persnr', 'mitarbeiternummer', 'mitarbeiternr', 'mitarbeiterid', 'personalid', 'manr', 'kurzel', 'nr', 'id'] },
+  { key: 'first', names: ['vorname', 'rufname'] },
+  { key: 'last', names: ['nachname', 'familienname'] },
+  { key: 'role', names: ['funktion', 'rolle', 'berufsbezeichnung', 'stellenbezeichnung', 'beruf', 'position'] },
+  { key: 'name', names: ['name', 'mitarbeitende', 'mitarbeiter', 'person'] },
+];
+
+// "IIb", "2b" oder "Klasse IIb" werden einheitlich zu "IIb"
+function normalizeRisk(raw) {
+  const text = String(raw || '').trim();
+  if (!text || text === '-') return '';
+  if (/kein/i.test(text)) return NON_MEDICAL;
+  const short = text.toUpperCase().replace(/KLASSE|CLASS|KL\./g, '').replace(/\s+/g, '');
+  const known = { 1: 'I', '2A': 'IIa', '2B': 'IIb', 3: 'III', I: 'I', IIA: 'IIa', IIB: 'IIb', III: 'III' };
+  return known[short] || text;
+}
+
+// "12", "12 Monate", "jährlich" oder "alle 2 Jahre" werden zu Monaten
+function parseInterval(raw, risk) {
+  if (risk === NON_MEDICAL) return 0;
+  const text = String(raw || '').trim().toLowerCase();
+  if (!text) return DEFAULT_INTERVAL;
+  const number = parseInt(text.replace(/[^0-9]/g, ' ').trim(), 10);
+  if (/jahr|jähr/.test(text)) return (number > 0 ? number : 1) * 12;
+  if (number === 0) return 0;
+  return number > 0 ? number : DEFAULT_INTERVAL;
+}
+
+function parseDeviceRows(rows) {
+  const found = findColumns(rows, DEVICE_FIELDS, ['model', 'category']);
+  if (!found) {
+    return { error: 'In der Datei wurde keine Spalte mit dem Gerät gefunden. Erwartet wird eine Kopfzeile, zum Beispiel: Gerätetyp, Modell, Risikoklasse, Hersteller, Intervall (Monate).' };
+  }
+  const value = (row, key) => (found.cols[key] === undefined ? '' : (row[found.cols[key]] || '').trim());
+  const items = [];
+  let skipped = 0;
+  rows.slice(found.headerRow + 1).forEach((row) => {
+    let model = value(row, 'model');
+    let category = value(row, 'category');
+    if (!model && !category) { skipped += 1; return; }
+    if (!model) { model = category; category = ''; }
+    const risk = normalizeRisk(value(row, 'risk'));
+    items.push({ model, category, vendor: value(row, 'vendor'), risk, interval: parseInterval(value(row, 'interval'), risk) });
+  });
+  if (items.length === 0) return { error: 'Unter der Kopfzeile stehen keine Geräte.' };
+  return { items, skipped, labels: found.labels, hasInterval: found.cols.interval !== undefined };
+}
+
+function parseStaffRows(rows) {
+  const found = findColumns(rows, STAFF_FIELDS, ['name', 'last', 'first']);
+  if (!found) {
+    return { error: 'In der Datei wurde keine Spalte mit dem Namen gefunden. Erwartet wird eine Kopfzeile, zum Beispiel: Name, Funktion, Personalnummer.' };
+  }
+  const value = (row, key) => (found.cols[key] === undefined ? '' : (row[found.cols[key]] || '').trim());
+  const items = [];
+  let skipped = 0;
+  rows.slice(found.headerRow + 1).forEach((row) => {
+    const first = value(row, 'first');
+    const last = value(row, 'last') || value(row, 'name');
+    const hasBoth = found.cols.first !== undefined && (found.cols.last !== undefined || found.cols.name !== undefined);
+    let name = hasBoth ? (first + ' ' + last).trim() : (value(row, 'name') || first || last);
+    // "Meier, Sarah" wird zu "Sarah Meier"
+    const comma = name.split(',');
+    if (comma.length === 2) name = (comma[1].trim() + ' ' + comma[0].trim()).trim();
+    if (!name) { skipped += 1; return; }
+    items.push({ name, role: value(row, 'role'), persNo: value(row, 'persNo') });
+  });
+  if (items.length === 0) return { error: 'Unter der Kopfzeile stehen keine Mitarbeitenden.' };
+  return { items, skipped, labels: found.labels };
+}
+
+// Vergleicht die importierten Geräte mit dem Bestand:
+// add = neu, link = in der Klinik bekannt, aber noch nicht in dieser Abteilung, same = schon vorhanden
+function planDeviceImport(items, devices, deptId) {
+  const keyOf = (d) => norm(d.model) + '|' + norm(d.vendor);
+  const add = [];
+  const link = [];
+  let same = 0;
+  items.forEach((item) => {
+    const existing = devices.find((d) => keyOf(d) === keyOf(item));
+    if (existing && existing.depts.indexOf(deptId) >= 0) same += 1;
+    else if (existing) { if (link.indexOf(existing.id) < 0) link.push(existing.id); else same += 1; }
+    else if (add.some((d) => keyOf(d) === keyOf(item))) same += 1;
+    else add.push(item);
+  });
+  return { add, link, same };
+}
+
+function planStaffImport(items, staff) {
+  const samePerson = (a, b) => (a.persNo && b.persNo ? norm(a.persNo) === norm(b.persNo) : norm(a.name) === norm(b.name));
+  const add = [];
+  let same = 0;
+  items.forEach((item) => {
+    if (staff.some((p) => samePerson(p, item)) || add.some((p) => samePerson(p, item))) same += 1;
+    else add.push(item);
+  });
+  return { add, same };
+}
+
+// Lädt eine Vorlage herunter, die sich in Excel öffnen und ausfüllen lässt.
+function downloadTemplate(fileName, rows) {
+  const escape = (value) => (/[";\n]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value);
+  const text = '\uFEFF' + rows.map((row) => row.map(escape).join(';')).join('\r\n') + '\r\n';
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const DEVICE_TEMPLATE = [
+  ['Gerätetyp', 'Modell', 'Risikoklasse', 'Hersteller', 'Intervall (Monate)'],
+  ['Infusionspumpe', 'Beispielpumpe 200', 'IIb', 'Beispiel Medical AG', '24'],
+  ['Patientenmonitor', 'Beispielmonitor X', 'IIa', 'Beispiel Medical AG', '24'],
+];
+const STAFF_TEMPLATE = [
+  ['Name', 'Funktion', 'Personalnummer'],
+  ['Anna Beispiel', 'Dipl. Pflegefachfrau HF', 'MA-1001'],
+  ['Marco Muster', 'Fachmann Gesundheit EFZ', 'MA-1002'],
+];
 
 
 /* ==========================================================================
@@ -382,6 +722,35 @@ function Segmented({ label, options, value, onChange }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// Fenster über der Seite. Auf dem Handy fährt es von unten herein. Schliesst mit Escape oder Klick daneben.
+function Modal({ label, onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 sm:items-center sm:p-4" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-5 flex items-center justify-between gap-4">
+          <Logo size="sm" />
+          <button onClick={onClose} aria-label="Fenster schliessen" className={FOCUS + 'flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900'}>
+            <Close className="h-5 w-5" />
+          </button>
+        </div>
+        {children}
+      </div>
     </div>
   );
 }
@@ -564,7 +933,7 @@ function RoleCard({ icon, title, subtitle, text, button, onStart, tag, children 
 function RoleSelect({ staff, selectedStaffId, onSelectStaff, onStart }) {
   return (
     <div lang="de" className="flex min-h-screen bg-slate-100 px-4 py-8 text-slate-800 sm:px-6 sm:py-12 lg:items-center">
-      <div className="mx-auto w-full max-w-5xl">
+      <div className="mx-auto w-full max-w-6xl">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <Logo size="lg" />
           <div className="text-sm text-slate-500">
@@ -636,7 +1005,7 @@ const ROLE_TABS = [
 function Header({ role, onRole, onRoleSelect, onLock }) {
   return (
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3 sm:px-6">
+      <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3 sm:px-6 lg:px-8">
         <Logo size="sm" />
         <div className="order-3 w-full lg:order-2 lg:flex lg:w-auto lg:flex-1 lg:justify-center">
           <Segmented label="Rolle" options={ROLE_TABS} value={role} onChange={onRole} />
@@ -671,10 +1040,10 @@ function EmployeeView({ person, staff, devices, onSelectStaff, onShowCert }) {
       <div className={ui.panel + ' p-5 sm:p-6'}>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-slate-500">Mein Gerätepass</p>
-            <h1 className="mt-0.5 text-2xl font-semibold tracking-tight text-slate-900">{person.name}</h1>
+            <p className="mb-0.5 text-sm font-medium text-slate-500">Mein Gerätepass</p>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{person.name}</h1>
             <p className="mt-1 text-sm text-slate-600">{person.role}</p>
-            <p className="text-sm text-slate-600">Personal-Nr. {person.persNo}, {deptById(person.dept).name}</p>
+            <p className="text-sm text-slate-600">{parts(person.persNo && 'Personal-Nr. ' + person.persNo, deptById(person.dept).name)}</p>
           </div>
           <div className="w-full sm:w-auto">
             <label htmlFor="gp-demo-person" className="mb-1 block text-xs font-medium text-slate-500">Demo: Person wechseln</label>
@@ -701,7 +1070,7 @@ function EmployeeView({ person, staff, devices, onSelectStaff, onShowCert }) {
               <li key={device.id} className="flex flex-col gap-3 px-4 py-4 sm:px-6 md:flex-row md:items-center md:gap-6">
                 <div className="min-w-0 md:flex-1">
                   <div className="font-semibold text-slate-900">{device.model}</div>
-                  <div className="text-sm text-slate-500">{device.category}, {device.vendor}</div>
+                  <div className="text-sm text-slate-500">{parts(device.category, device.vendor)}</div>
                 </div>
                 <div className="text-sm text-slate-500 md:w-48">{riskText(device.risk)}, alle {device.interval} Monate</div>
                 <div className="flex items-center justify-between gap-3 md:w-80">
@@ -813,7 +1182,7 @@ function Matrix({ staffList, devices, editMode, readOnly, onToggleAssign, onOpen
             <tr className="border-b border-slate-200 bg-slate-50 align-bottom">
               <th scope="col" className="sticky left-0 z-10 min-w-[200px] bg-slate-50 px-6 py-3 font-semibold text-slate-600">Mitarbeitende</th>
               {devices.map((device) => (
-                <th key={device.id} scope="col" title={device.category + ', ' + device.vendor} className="w-24 min-w-[92px] px-1.5 py-3 text-center font-normal">
+                <th key={device.id} scope="col" title={parts(device.category, device.vendor)} className="w-24 min-w-[92px] px-1.5 py-3 text-center font-normal">
                   <div className="font-semibold leading-tight text-slate-900">{device.model}</div>
                   <div className="mt-1 text-xs leading-tight text-slate-500 [-webkit-hyphens:auto] [hyphens:auto]">{device.category}</div>
                   <div className="mt-1 text-xs text-slate-400">{riskText(device.risk)}</div>
@@ -952,7 +1321,7 @@ function TrainingTab({ devices, staffList, preset, onSave }) {
         <label htmlFor="gp-train-device" className={ui.label}>Gerät</label>
         <select id="gp-train-device" value={deviceId} onChange={(e) => { setDeviceId(e.target.value); setError(''); }} className={ui.input}>
           {devices.map((d) => (
-            <option key={d.id} value={d.id}>{d.model}, {d.category} ({riskText(d.risk)})</option>
+            <option key={d.id} value={d.id}>{parts(d.model, d.category)} ({riskText(d.risk)})</option>
           ))}
         </select>
       </div>
@@ -1014,62 +1383,271 @@ function TrainingTab({ devices, staffList, preset, onSave }) {
   );
 }
 
-/* ---------- 6.7 Stationsleitung: Geräteinventar ---------- */
+/* ---------- 6.7 Stationsleitung: Listen importieren ---------- */
 
-const INVENTORY_COLS = 'md:grid md:grid-cols-[1.4fr_1.6fr_1fr_1.4fr_1fr] md:gap-4';
-
-function InventoryTab({ devices, onSync }) {
-  const [onlyMedical, setOnlyMedical] = useState(true);
-  const visible = devices.filter((d) => !onlyMedical || d.risk !== NON_MEDICAL);
-
+// Knopf, der eine Datei auswählen lässt
+function FileButton({ label, onFile }) {
+  const inputRef = useRef(null);
   return (
-    <div className={ui.panel + ' overflow-hidden'}>
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-6">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Geräteinventar der Station</h2>
-          <p className="text-sm text-slate-500">Wird mit dem Inventar der Medizinaltechnik abgeglichen.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex min-h-[40px] cursor-pointer items-center gap-2 text-sm text-slate-700">
-            <input type="checkbox" checked={onlyMedical} onChange={(e) => setOnlyMedical(e.target.checked)} className="h-4 w-4 accent-[#17324D]" />
-            Nur Medizinprodukte
-          </label>
-          <button onClick={onSync} className={ui.btnSecondary}><Refresh /> Inventar synchronisieren</button>
-        </div>
-      </div>
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".xlsx,.xlsm,.csv"
+        aria-label={label}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files[0];
+          e.target.value = ''; // damit dieselbe Datei erneut gewählt werden kann
+          if (file) onFile(file);
+        }}
+      />
+      <button type="button" onClick={() => inputRef.current.click()} className={ui.btnPrimary}>
+        <Upload /> {label}
+      </button>
+    </>
+  );
+}
 
-      <div className={'hidden border-b border-slate-200 bg-slate-50 px-6 py-3 text-sm font-semibold text-slate-600 ' + INVENTORY_COLS}>
-        <span>Modell</span><span>Gerätetyp</span><span>Risikoklasse</span><span>Hersteller</span><span>Wiederholung</span>
-      </div>
-      <ul className="divide-y divide-slate-200">
-        {visible.map((d) => (
-          <li key={d.id} className={'flex flex-wrap gap-x-4 gap-y-0.5 px-4 py-4 text-sm sm:px-6 md:items-center ' + INVENTORY_COLS}>
-            <div className="flex w-full flex-wrap items-center gap-2 font-semibold text-slate-900">
-              {d.model}
-              {d.isNew && <span className="rounded-full bg-[#17324D] px-2 py-0.5 text-xs font-semibold text-white">Neu</span>}
-            </div>
-            <div className="w-full text-slate-600">{d.category}<span className="md:hidden">, {d.vendor}</span></div>
-            <div className="text-slate-500 md:text-slate-600">{riskText(d.risk)}</div>
-            <div className="hidden text-slate-600 md:block">{d.vendor}</div>
-            <div className="text-slate-500 md:text-slate-600">
-              {needsTraining(d) ? 'alle ' + d.interval + ' Monate' : 'keine Schulungspflicht'}
-            </div>
-          </li>
-        ))}
+// Vorschau vor dem Import: zeigt, was neu dazukommt, und fragt nach Bestätigung
+function ImportDialog({ title, fileName, target, facts, preview, onConfirm, onCancel }) {
+  const shown = preview.slice(0, 6);
+  return (
+    <Modal label={title} onClose={onCancel}>
+      <h2 className="text-xl font-semibold tracking-tight text-slate-900">{title}</h2>
+      <p className="text-sm text-slate-500">{fileName}, Ziel: {target}</p>
+
+      <ul className="mt-4 space-y-1.5 text-sm text-slate-700">
+        {facts.map((fact) => <li key={fact} className="flex gap-2"><Check className="mt-0.5 h-4 w-4 text-emerald-600" /><span>{fact}</span></li>)}
       </ul>
+
+      {shown.length > 0 && (
+        <ul className="mt-4 divide-y divide-slate-200 rounded-xl border border-slate-200 text-sm">
+          {shown.map((item, i) => (
+            <li key={i} className="px-4 py-2.5">
+              <div className="font-semibold text-slate-900">{item.title}</div>
+              {item.text && <div className="text-slate-500">{item.text}</div>}
+            </li>
+          ))}
+          {preview.length > shown.length && (
+            <li className="px-4 py-2.5 text-slate-500">und {preview.length - shown.length} weitere</li>
+          )}
+        </ul>
+      )}
+
+      <div className="mt-6 flex flex-col gap-2 sm:flex-row-reverse">
+        {preview.length > 0 && (
+          <button onClick={onConfirm} className={ui.btnPrimary + ' sm:flex-1'}>{plural(preview.length, 'Eintrag', 'Einträge')} importieren</button>
+        )}
+        <button onClick={onCancel} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}>{preview.length > 0 ? 'Abbrechen' : 'Schliessen'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Kopf eines Bereichs mit Import-Knopf, Vorlage und Fehlermeldung
+function ImportBar({ label, hint, error, onFile, onTemplate, children }) {
+  return (
+    <div className="border-b border-slate-200 px-4 py-4 sm:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        {children}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <button type="button" onClick={onTemplate} className={ui.link}><Download /> Vorlage herunterladen</button>
+          <FileButton label={label} onFile={onFile} />
+        </div>
+      </div>
+      <p className="mt-3 text-sm text-slate-500">{hint}</p>
+      {error && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800">{error}</p>}
     </div>
   );
 }
 
-/* ---------- 6.8 Stationsleitung ---------- */
+/* ---------- 6.8 Stationsleitung: Geräteinventar ---------- */
+
+const INVENTORY_COLS = 'md:grid md:grid-cols-[1.4fr_1.6fr_1fr_1.4fr_1fr] md:gap-4';
+
+function InventoryTab({ deptId, devices, allDevices, onImport }) {
+  const [onlyMedical, setOnlyMedical] = useState(true);
+  const [draft, setDraft] = useState(null); // gelesene Datei, wartet auf Bestätigung
+  const [error, setError] = useState('');
+  const visible = devices
+    .filter((d) => !onlyMedical || d.risk !== NON_MEDICAL)
+    .sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0));
+
+  const handleFile = async (file) => {
+    setError('');
+    try {
+      const parsed = parseDeviceRows(await readTableFile(file));
+      if (parsed.error) { setError(parsed.error); return; }
+      setDraft({ ...parsed, fileName: file.name, plan: planDeviceImport(parsed.items, allDevices, deptId) });
+    } catch (err) {
+      setError(importErrorText(err));
+    }
+  };
+
+  let dialog = null;
+  if (draft) {
+    const { plan } = draft;
+    const linked = allDevices.filter((d) => plan.link.indexOf(d.id) >= 0);
+    const facts = ['Erkannte Spalten: ' + draft.labels.join(', ')];
+    if (plan.add.length) facts.push(plural(plan.add.length, 'neues Gerät', 'neue Geräte'));
+    if (linked.length) facts.push(plural(linked.length, 'Gerät', 'Geräte') + ' aus dem Klinik-Inventar, neu für diese Abteilung');
+    if (plan.same) facts.push(plural(plan.same, 'Gerät', 'Geräte') + ' bereits vorhanden, ' + (plan.same === 1 ? 'bleibt' : 'bleiben') + ' unverändert');
+    if (draft.skipped) facts.push(plural(draft.skipped, 'Zeile', 'Zeilen') + ' ohne Bezeichnung übersprungen');
+    if (!draft.hasInterval && plan.add.length) facts.push('Ohne Intervall-Spalte gilt: Wiederholung alle ' + DEFAULT_INTERVAL + ' Monate');
+    dialog = (
+      <ImportDialog
+        title="Geräteliste importieren"
+        fileName={draft.fileName}
+        target={deptById(deptId).name}
+        facts={facts}
+        preview={plan.add.concat(linked).map((d) => ({
+          title: d.model,
+          text: parts(d.category, d.vendor, riskText(d.risk), needsTraining(d) ? 'alle ' + d.interval + ' Monate' : 'keine Schulungspflicht'),
+        }))}
+        onConfirm={() => { onImport(plan); setDraft(null); }}
+        onCancel={() => setDraft(null)}
+      />
+    );
+  }
+
+  return (
+    <div className={ui.panel + ' overflow-hidden'}>
+      <ImportBar
+        label="Geräteliste importieren"
+        hint="Import aus Excel (.xlsx) oder CSV. Die Kopfzeile nennt die Spalten, zum Beispiel Gerätetyp, Modell, Risikoklasse, Hersteller und Intervall in Monaten."
+        error={error}
+        onFile={handleFile}
+        onTemplate={() => downloadTemplate('geraeteliste-vorlage.csv', DEVICE_TEMPLATE)}
+      >
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">Geräteinventar der Station</h2>
+          <label className="mt-1 flex min-h-[32px] cursor-pointer items-center gap-2 text-sm text-slate-700">
+            <input type="checkbox" checked={onlyMedical} onChange={(e) => setOnlyMedical(e.target.checked)} className="h-4 w-4 accent-[#17324D]" />
+            Nur Medizinprodukte
+          </label>
+        </div>
+      </ImportBar>
+
+      <div className={'hidden border-b border-slate-200 bg-slate-50 px-6 py-3 text-sm font-semibold text-slate-600 ' + INVENTORY_COLS}>
+        <span>Modell</span><span>Gerätetyp</span><span>Risikoklasse</span><span>Hersteller</span><span>Wiederholung</span>
+      </div>
+      {visible.length === 0 ? (
+        <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Das Inventar dieser Abteilung ist noch leer. Importieren Sie eine Geräteliste.</p>
+      ) : (
+        <ul className="divide-y divide-slate-200">
+          {visible.map((d) => (
+            <li key={d.id} className={'flex flex-wrap gap-x-4 gap-y-0.5 px-4 py-4 text-sm sm:px-6 md:items-center ' + INVENTORY_COLS}>
+              <div className="flex w-full flex-wrap items-center gap-2 font-semibold text-slate-900">
+                {d.model}
+                {d.isNew && <span className="rounded-full bg-[#17324D] px-2 py-0.5 text-xs font-semibold text-white">Neu</span>}
+              </div>
+              <div className="w-full text-slate-600">
+                <span className="md:hidden">{parts(d.category, d.vendor)}</span>
+                <span className="hidden md:inline">{d.category || '–'}</span>
+              </div>
+              <div className="text-slate-500 md:text-slate-600">{riskText(d.risk)}</div>
+              <div className="hidden text-slate-600 md:block">{d.vendor || '–'}</div>
+              <div className="text-slate-500 md:text-slate-600">
+                {needsTraining(d) ? 'alle ' + d.interval + ' Monate' : 'keine Schulungspflicht'}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {dialog}
+    </div>
+  );
+}
+
+/* ---------- 6.9 Stationsleitung: Team ---------- */
+
+function TeamTab({ deptId, staffList, allStaff, devices, onImport }) {
+  const [draft, setDraft] = useState(null);
+  const [error, setError] = useState('');
+
+  const handleFile = async (file) => {
+    setError('');
+    try {
+      const parsed = parseStaffRows(await readTableFile(file));
+      if (parsed.error) { setError(parsed.error); return; }
+      setDraft({ ...parsed, fileName: file.name, plan: planStaffImport(parsed.items, allStaff) });
+    } catch (err) {
+      setError(importErrorText(err));
+    }
+  };
+
+  let dialog = null;
+  if (draft) {
+    const { plan } = draft;
+    const facts = ['Erkannte Spalten: ' + draft.labels.join(', ')];
+    if (plan.add.length) facts.push(plural(plan.add.length, 'neue Person', 'neue Personen'));
+    if (plan.same) facts.push(plural(plan.same, 'Person', 'Personen') + ' bereits erfasst, ' + (plan.same === 1 ? 'bleibt' : 'bleiben') + ' unverändert');
+    if (draft.skipped) facts.push(plural(draft.skipped, 'Zeile', 'Zeilen') + ' ohne Namen übersprungen');
+    if (plan.add.length) facts.push('Geräte teilen Sie danach in der Matrix zu');
+    dialog = (
+      <ImportDialog
+        title="Mitarbeiterliste importieren"
+        fileName={draft.fileName}
+        target={deptById(deptId).name}
+        facts={facts}
+        preview={plan.add.map((p) => ({ title: p.name, text: parts(p.role, p.persNo && 'Personal-Nr. ' + p.persNo) }))}
+        onConfirm={() => { onImport(plan.add); setDraft(null); }}
+        onCancel={() => setDraft(null)}
+      />
+    );
+  }
+
+  return (
+    <div className={ui.panel + ' overflow-hidden'}>
+      <ImportBar
+        label="Mitarbeiterliste importieren"
+        hint="Import aus Excel (.xlsx) oder CSV. Die Kopfzeile nennt die Spalten, zum Beispiel Name, Funktion und Personalnummer."
+        error={error}
+        onFile={handleFile}
+        onTemplate={() => downloadTemplate('mitarbeiterliste-vorlage.csv', STAFF_TEMPLATE)}
+      >
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">Team der Station</h2>
+          <p className="text-sm text-slate-500">{plural(staffList.length, 'Person', 'Personen')}</p>
+        </div>
+      </ImportBar>
+
+      {staffList.length === 0 ? (
+        <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Für diese Abteilung sind noch keine Mitarbeitenden erfasst. Importieren Sie eine Mitarbeiterliste.</p>
+      ) : (
+        <ul className="divide-y divide-slate-200">
+          {staffList.map((person) => {
+            const sum = summarize([person], devices);
+            return (
+              <li key={person.id} className="flex flex-col gap-1 px-4 py-4 text-sm sm:px-6 md:flex-row md:items-center md:gap-6">
+                <div className="min-w-0 md:flex-1">
+                  <div className="font-semibold text-slate-900">{person.name}</div>
+                  <div className="text-slate-500">{parts(person.role, person.persNo && 'Personal-Nr. ' + person.persNo) || 'Keine weiteren Angaben'}</div>
+                </div>
+                <div className="text-slate-600 md:w-64 md:text-right">
+                  {sum.total === 0 ? 'Noch keine Geräte zugeteilt' : sum.ok + ' von ' + sum.total + ' Schulungen gültig'}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {dialog}
+    </div>
+  );
+}
+
+/* ---------- 6.10 Stationsleitung ---------- */
 
 const LINE_TABS = [
   { id: 'matrix', label: 'Matrix' },
-  { id: 'train', label: 'Schulung erfassen' },
+  { id: 'train', label: 'Schulung' },
   { id: 'inventory', label: 'Inventar' },
+  { id: 'team', label: 'Team' },
 ];
 
-function LineView({ deptId, staffList, deptDevices, tab, preset, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onSync }) {
+function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, preset, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff }) {
   const [editMode, setEditMode] = useState(false);
   const trainDevices = deptDevices.filter(needsTraining);
 
@@ -1084,8 +1662,8 @@ function LineView({ deptId, staffList, deptDevices, tab, preset, onTab, onDept, 
       <div className={ui.panel + ' p-5 sm:p-6'}>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-slate-500">Stationsleitung</p>
-            <h1 className="mt-0.5 text-2xl font-semibold tracking-tight text-slate-900">{deptById(deptId).name}</h1>
+            <p className="mb-0.5 text-sm font-medium text-slate-500">Stationsleitung</p>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{deptById(deptId).name}</h1>
             <p className="mt-1 text-sm text-slate-600">Geräte zuteilen, Schulungen erfassen und das Inventar der Station führen.</p>
           </div>
           <div className="w-full sm:w-auto">
@@ -1127,19 +1705,21 @@ function LineView({ deptId, staffList, deptDevices, tab, preset, onTab, onDept, 
         <TrainingTab key={preset ? preset.key : 'leer'} devices={trainDevices} staffList={staffList} preset={preset} onSave={onSaveTraining} />
       )}
 
-      {tab === 'inventory' && <InventoryTab devices={deptDevices} onSync={onSync} />}
+      {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} />}
+
+      {tab === 'team' && <TeamTab deptId={deptId} staffList={staffList} allStaff={allStaff} devices={deptDevices} onImport={onImportStaff} />}
     </div>
   );
 }
 
-/* ---------- 6.9 QM: Klinik-Übersicht (nur lesen) ---------- */
+/* ---------- 6.11 QM: Klinik-Übersicht (nur lesen) ---------- */
 
 function QmView({ staff, devices, log, onShowCert }) {
   return (
     <div className="space-y-5">
       <div className={ui.panel + ' p-5 sm:p-6'}>
-        <p className="text-sm font-medium text-slate-500">Qualitätsmanagement</p>
-        <h1 className="mt-0.5 text-2xl font-semibold tracking-tight text-slate-900">Klinik-Übersicht</h1>
+        <p className="mb-0.5 text-sm font-medium text-slate-500">Qualitätsmanagement</p>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Klinik-Übersicht</h1>
         <p className="mt-1 max-w-2xl text-sm text-slate-600">
           Alle Abteilungen im Überblick, nur lesend. Zuteilungen und Schulungen pflegen die Stationsleitungen.
         </p>
@@ -1171,7 +1751,7 @@ function QmView({ staff, devices, log, onShowCert }) {
       <section className={ui.panel + ' overflow-hidden'}>
         <div className="border-b border-slate-200 px-4 py-4 sm:px-6">
           <h2 className="text-lg font-semibold text-slate-900">Änderungsprotokoll</h2>
-          <p className="text-sm text-slate-500">Zuteilungen, Schulungen und Inventar-Abgleiche dieser Sitzung.</p>
+          <p className="text-sm text-slate-500">Zuteilungen, Schulungen und Importe dieser Sitzung.</p>
         </div>
         {log.length === 0 ? (
           <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">In dieser Sitzung wurde noch nichts geändert.</p>
@@ -1190,19 +1770,13 @@ function QmView({ staff, devices, log, onShowCert }) {
   );
 }
 
-/* ---------- 6.10 Schulungsnachweis (Fenster) ---------- */
+/* ---------- 6.12 Schulungsnachweis (Fenster) ---------- */
 
 function CertificateModal({ person, device, onClose, onRetrain }) {
   const records = person.certs[device.id] || [];
   const latest = records[records.length - 1];
   const earlier = records.slice(0, -1).reverse();
   const status = getStatus(device, records);
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   if (!latest) return null;
 
@@ -1214,75 +1788,60 @@ function CertificateModal({ person, device, onClose, onRetrain }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 sm:items-center sm:p-4" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Schulungsnachweis"
-        className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-6"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-4">
-          <Logo size="sm" />
-          <button onClick={onClose} aria-label="Nachweis schliessen" className={FOCUS + 'flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900'}>
-            <Close className="h-5 w-5" />
-          </button>
+    <Modal label="Schulungsnachweis" onClose={onClose}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Schulungsnachweis</h2>
+          <p className="text-sm text-slate-500">{device.model}</p>
         </div>
-
-        <div className="mt-5 flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h2 className="text-xl font-semibold tracking-tight text-slate-900">Schulungsnachweis</h2>
-            <p className="text-sm text-slate-500">{device.model}</p>
-          </div>
-          {/* Stempel wie in einem Pass */}
-          <div className={'flex shrink-0 -rotate-3 flex-col items-center rounded-lg border-2 px-3 py-1.5 ' + STATUS[status.key].stamp}>
-            <span className="text-sm font-bold uppercase tracking-widest">{STATUS[status.key].label}</span>
-            <span className="text-xs font-medium">{statusHint(status)}</span>
-          </div>
-        </div>
-
-        <dl className="mt-4 divide-y divide-slate-200 border-y border-slate-200">
-          <Field label="Mitarbeitende/r">{person.name} ({person.persNo})</Field>
-          <Field label="Datum der Schulung">{formatDate(latest.date)}, {latest.type}</Field>
-          <Field label="Gerät">{device.category}, {device.model}</Field>
-          <Field label="Risikoklasse nach MepV">{riskText(device.risk)}</Field>
-          <Field label="Instruktor/in">{latest.instructor}</Field>
-          <Field label="Wiederholung">alle {device.interval} Monate</Field>
-        </dl>
-
-        <div className="mt-4">
-          <div className="mb-1.5 text-sm text-slate-500">Unterschrift</div>
-          <div className="flex min-h-[72px] items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2">
-            {latest.sigImage ? (
-              <img src={latest.sigImage} alt={'Unterschrift von ' + person.name} className="h-16 max-w-full" />
-            ) : (
-              <span className="font-serif text-xl italic text-[#17324D]">{latest.sigName}</span>
-            )}
-          </div>
-        </div>
-
-        {earlier.length > 0 && (
-          <div className="mt-5">
-            <h3 className="mb-1.5 text-sm font-semibold text-slate-900">Frühere Nachweise</h3>
-            <ul className="divide-y divide-slate-200 rounded-xl border border-slate-200 text-sm">
-              {earlier.map((r, i) => (
-                <li key={i} className="flex flex-col gap-0.5 px-4 py-2.5 text-slate-600 sm:flex-row sm:justify-between sm:gap-4">
-                  <span>{formatDate(r.date)}, {r.type}</span>
-                  <span>{r.instructor}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div className="mt-6 flex flex-col gap-2 sm:flex-row-reverse">
-          {onRetrain && (
-            <button onClick={onRetrain} className={ui.btnPrimary + ' sm:flex-1'}>Wiederholung erfassen</button>
-          )}
-          <button onClick={onClose} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}>Schliessen</button>
+        {/* Stempel wie in einem Pass */}
+        <div className={'flex shrink-0 -rotate-3 flex-col items-center rounded-lg border-2 px-3 py-1.5 ' + STATUS[status.key].stamp}>
+          <span className="text-sm font-bold uppercase tracking-widest">{STATUS[status.key].label}</span>
+          <span className="text-xs font-medium">{statusHint(status)}</span>
         </div>
       </div>
-    </div>
+
+      <dl className="mt-4 divide-y divide-slate-200 border-y border-slate-200">
+        <Field label="Mitarbeitende/r">{person.name}{person.persNo ? ' (' + person.persNo + ')' : ''}</Field>
+        <Field label="Datum der Schulung">{formatDate(latest.date)}, {latest.type}</Field>
+        <Field label="Gerät">{parts(device.category, device.model)}</Field>
+        <Field label="Risikoklasse nach MepV">{riskText(device.risk)}</Field>
+        <Field label="Instruktor/in">{latest.instructor}</Field>
+        <Field label="Wiederholung">alle {device.interval} Monate</Field>
+      </dl>
+
+      <div className="mt-4">
+        <div className="mb-1.5 text-sm text-slate-500">Unterschrift</div>
+        <div className="flex min-h-[72px] items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2">
+          {latest.sigImage ? (
+            <img src={latest.sigImage} alt={'Unterschrift von ' + person.name} className="h-16 max-w-full" />
+          ) : (
+            <span className="font-serif text-xl italic text-[#17324D]">{latest.sigName}</span>
+          )}
+        </div>
+      </div>
+
+      {earlier.length > 0 && (
+        <div className="mt-5">
+          <h3 className="mb-1.5 text-sm font-semibold text-slate-900">Frühere Nachweise</h3>
+          <ul className="divide-y divide-slate-200 rounded-xl border border-slate-200 text-sm">
+            {earlier.map((r, i) => (
+              <li key={i} className="flex flex-col gap-0.5 px-4 py-2.5 text-slate-600 sm:flex-row sm:justify-between sm:gap-4">
+                <span>{formatDate(r.date)}, {r.type}</span>
+                <span>{r.instructor}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-6 flex flex-col gap-2 sm:flex-row-reverse">
+        {onRetrain && (
+          <button onClick={onRetrain} className={ui.btnPrimary + ' sm:flex-1'}>Wiederholung erfassen</button>
+        )}
+        <button onClick={onClose} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}>Schliessen</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1398,18 +1957,26 @@ export default function App() {
     setLineTab('matrix');
   };
 
-  // Simulierter Abgleich mit dem Inventar: fügt der aktuellen Abteilung ein neues Gerät hinzu.
-  const syncInventory = () => {
-    const existing = devices.find((d) => d.id === SYNC_DEVICE.id);
-    if (existing && existing.depts.includes(deptId)) {
-      notify('Das Inventar ist bereits aktuell.');
-      return;
-    }
-    setDevices((prev) => (existing
-      ? prev.map((d) => (d.id === SYNC_DEVICE.id ? { ...d, depts: [...d.depts, deptId] } : d))
-      : [{ ...SYNC_DEVICE, depts: [deptId] }, ...prev]));
-    addLog(actor + ': Inventar synchronisiert, ' + SYNC_DEVICE.model + ' neu aufgenommen');
-    notify('Inventar synchronisiert: 1 neues Gerät.');
+  // Importierte Geräte ins Inventar der aktuellen Abteilung aufnehmen
+  const importDevices = (plan) => {
+    const stamp = Date.now();
+    const added = plan.add.map((item, i) => ({ ...item, id: 'd' + stamp + '-' + i, depts: [deptId], isNew: true }));
+    setDevices((prev) => prev
+      .map((d) => (plan.link.indexOf(d.id) >= 0 ? { ...d, depts: [...d.depts, deptId] } : d))
+      .concat(added));
+    const total = plan.add.length + plan.link.length;
+    addLog(actor + ': Geräteliste importiert, ' + plural(total, 'Gerät', 'Geräte') + ' aufgenommen');
+    notify('Geräteliste importiert: ' + plural(total, 'Gerät', 'Geräte') + ' aufgenommen.');
+  };
+
+  // Importierte Mitarbeitende der aktuellen Abteilung hinzufügen (noch ohne Geräte)
+  const importStaff = (people) => {
+    const stamp = Date.now();
+    setStaff((prev) => prev.concat(people.map((p, i) => ({
+      id: 's' + stamp + '-' + i, name: p.name, role: p.role, persNo: p.persNo, dept: deptId, assigned: [], certs: {},
+    }))));
+    addLog(actor + ': Mitarbeiterliste importiert, ' + plural(people.length, 'Person', 'Personen') + ' aufgenommen');
+    notify('Mitarbeiterliste importiert: ' + plural(people.length, 'Person', 'Personen') + ' aufgenommen.');
   };
 
   const showCert = (personId, deviceId) => setCertView({ personId, deviceId });
@@ -1434,7 +2001,7 @@ export default function App() {
         onLock={lock}
       />
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6 sm:py-6">
+      <main className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
         {role === 'employee' && (
           <EmployeeView person={currentEmployee} staff={staff} devices={devices} onSelectStaff={setSelectedStaffId} onShowCert={showCert} />
         )}
@@ -1445,6 +2012,8 @@ export default function App() {
             deptId={deptId}
             staffList={deptStaff}
             deptDevices={deptDevices}
+            allStaff={staff}
+            allDevices={devices}
             tab={lineTab}
             preset={trainPreset}
             onTab={(next) => { setLineTab(next); if (next !== 'train') setTrainPreset(null); }}
@@ -1453,7 +2022,8 @@ export default function App() {
             onShowCert={showCert}
             onStartTraining={startTraining}
             onSaveTraining={saveTraining}
-            onSync={syncInventory}
+            onImportDevices={importDevices}
+            onImportStaff={importStaff}
           />
         )}
 
