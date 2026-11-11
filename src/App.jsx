@@ -34,6 +34,17 @@ const WARN_DAYS = 60;
 // Wiederholungs-Intervall in Monaten, wenn eine importierte Geräteliste keines angibt.
 const DEFAULT_INTERVAL = 12;
 
+// Erinnerungen: wählbare Vorwarnzeiten (Tage vor Ablauf) und Voreinstellung pro Abteilung
+const LEAD_OPTIONS = [
+  { days: 14, label: '2 Wochen' },
+  { days: 30, label: '1 Monat' },
+  { days: 60, label: '2 Monate' },
+  { days: 90, label: '3 Monate' },
+  { days: 180, label: '6 Monate' },
+];
+const DEFAULT_REMINDER = { email: '', leads: [90, 30], expired: true, missing: true };
+const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i;
+
 const NON_MEDICAL = 'kein Medizinprodukt';
 const DEFAULT_INSTRUCTOR = 'M. Keller (Berufsbildner)';
 
@@ -72,6 +83,15 @@ const BASE_CSS = [
   'body { margin: 0 !important; display: block !important; min-width: 0 !important; background: #f1f5f9 !important; }',
   '#root { display: block !important; width: 100% !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; text-align: left !important; }',
   'h1, h2 { margin: 0; letter-spacing: inherit; }',
+  // Druck: Ist ein Schulungsnachweis offen, kommt nur dieser aufs Blatt (A4), ohne Seite dahinter.
+  '@media print {',
+  '  @page { size: A4; margin: 16mm; }',
+  '  .gp-cert-open, .gp-cert-open body, .gp-cert-open #root, .gp-cert-open #root > div { background: #fff !important; min-height: 0 !important; display: block !important; }',
+  '  .gp-cert-open header, .gp-cert-open main, .gp-cert-open [role="status"], .gp-cert-open .gp-no-print { display: none !important; }',
+  '  .gp-cert-open .gp-overlay { position: static !important; display: block !important; padding: 0 !important; background: none !important; }',
+  '  .gp-cert-open .gp-sheet { width: auto !important; max-width: none !important; max-height: none !important; overflow: visible !important; padding: 0 !important; border-radius: 0 !important; box-shadow: none !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }',
+  '  .gp-cert-open .gp-print-only { display: block !important; }',
+  '}',
 ].join('\n');
 if (typeof document !== 'undefined') {
   let baseStyle = document.getElementById('gp-base-style');
@@ -113,6 +133,9 @@ const Lock = (p) => <Icon {...p}><rect width="18" height="11" x="3" y="11" rx="2
 const Swap = (p) => <Icon {...p}><path d="M8 3 4 7l4 4" /><path d="M4 7h16" /><path d="m16 21 4-4-4-4" /><path d="M20 17H4" /></Icon>;
 const Upload = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><path d="M12 3v12" /></Icon>;
 const Download = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><path d="M12 15V3" /></Icon>;
+const Printer = (p) => <Icon {...p}><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect width="12" height="8" x="6" y="14" /></Icon>;
+const Bell = (p) => <Icon {...p}><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></Icon>;
+const Mail = (p) => <Icon {...p}><rect width="20" height="16" x="2" y="4" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" /></Icon>;
 const Pencil = (p) => <Icon {...p}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></Icon>;
 const Close = (p) => <Icon {...p}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></Icon>;
 const Shield = (p) => <Icon {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></Icon>;
@@ -160,28 +183,27 @@ const daysBetween = (fromISO, untilISO) => Math.round((parseISO(untilISO) - pars
 // depts = in welchen Abteilungen das Gerät im Inventar steht
 // interval = Wiederholungs-Intervall in Monaten (0 = keine Schulungspflicht)
 const INITIAL_DEVICES = [
-  { id: 'd1', category: 'Langzeitbeatmungsgerät', model: 'VentPro 5000', risk: 'IIb', interval: 12, vendor: 'MedTech Systems AG', depts: ['A'] },
-  { id: 'd2', category: 'Langzeitbeatmungsgerät', model: 'VentPro Compact', risk: 'IIb', interval: 12, vendor: 'MedTech Systems AG', depts: ['A'] },
-  { id: 'd3', category: 'Infusionspumpe (volumetrisch)', model: 'InfusoMax V2', risk: 'IIb', interval: 24, vendor: 'SwissMed Solutions', depts: ['A', 'B'] },
-  { id: 'd4', category: 'Infusionsspritzenpumpe', model: 'SyringeFlow Pro', risk: 'IIb', interval: 24, vendor: 'SwissMed Solutions', depts: ['A'] },
-  { id: 'd5', category: 'Defibrillator (mit Monitor)', model: 'CardioShock Pro', risk: 'IIb', interval: 12, vendor: 'LifeCare Corp.', depts: ['A', 'B'] },
-  { id: 'd6', category: 'Hämodialysegerät', model: 'RenalClear Ultra', risk: 'IIb', interval: 12, vendor: 'BioFilter GmbH', depts: ['A'] },
-  { id: 'd7', category: 'Aktiver Atemgasbefeuchter', model: 'HumidAir Duo', risk: 'IIa', interval: 24, vendor: 'AeroMed AG', depts: ['A'] },
-  { id: 'd8', category: 'Blutgasanalyse-System', model: 'HemoScan Flex', risk: 'IIb', interval: 24, vendor: 'LabDiagnostik AG', depts: ['A'] },
-  { id: 'd9', category: 'Patientenmonitor', model: 'VitalView 1000', risk: 'IIa', interval: 24, vendor: 'GlobalHealth Tech', depts: ['A', 'B'] },
-  { id: 'd10', category: 'Thoraxdrainagegerät', model: 'ThoraxDrain Digital', risk: 'IIa', interval: 24, vendor: 'CarePump AG', depts: ['A'] },
-  { id: 'd11', category: 'Wärmetherapiegerät', model: 'ThermoBlanket Plus', risk: 'IIa', interval: 36, vendor: 'TempControl Medical', depts: ['B'] },
-  { id: 'd12', category: 'Ohr-Infrarot-Thermometer', model: 'TempScan 600', risk: 'I', interval: 36, vendor: 'BasicMed AG', depts: ['B'] },
-  { id: 'd13', category: 'Medikamentenkühlschrank', model: 'CoolStore Med 120', risk: NON_MEDICAL, interval: 0, vendor: 'KlimaTech AG', depts: ['A', 'B'] },
+  { id: 'd1', category: 'Beatmungsgerät', model: 'VentPro 5000', risk: 'IIb', interval: 12, vendor: 'MedTech Systems AG', depts: ['A'] },
+  { id: 'd2', category: 'Infusionspumpe', model: 'InfusoMax V2', risk: 'IIb', interval: 24, vendor: 'SwissMed Solutions', depts: ['A', 'B'] },
+  { id: 'd3', category: 'Spritzenpumpe', model: 'SyringeFlow Pro', risk: 'IIb', interval: 24, vendor: 'SwissMed Solutions', depts: ['A'] },
+  { id: 'd4', category: 'Defibrillator', model: 'CardioShock Pro', risk: 'IIb', interval: 12, vendor: 'LifeCare Corp.', depts: ['A', 'B'] },
+  { id: 'd5', category: 'Atemgasbefeuchter', model: 'HumidAir Duo', risk: 'IIa', interval: 24, vendor: 'AeroMed AG', depts: ['A'] },
+  { id: 'd6', category: 'Überwachungsmonitor', model: 'VitalView 8', risk: 'IIa', interval: 24, vendor: 'GlobalHealth Tech', depts: ['A', 'B'] },
+  { id: 'd7', category: 'Wärmedecke', model: 'ThermoBlanket Plus', risk: 'IIa', interval: 36, vendor: 'TempControl Medical', depts: ['B'] },
+  { id: 'd8', category: 'Ohrthermometer', model: 'EarCheck 2', risk: 'I', interval: 36, vendor: 'BasicMed AG', depts: ['B'] },
+  { id: 'd9', category: 'Kühlschrank für Medikamente', model: 'CoolStore Med 120', risk: NON_MEDICAL, interval: 0, vendor: 'KlimaTech AG', depts: ['A', 'B'] },
 ];
 
 // Ein Schulungsnachweis. Das Datum wird relativ zu heute gesetzt ("vor X Monaten"),
 // damit die Demo immer gleich aussieht, egal wann sie geöffnet wird.
-const demoCert = (monthsBack, instructor, type, sigName) => ({
+// "M. Keller (Berufsbildner)" unterschreibt als "M. Keller"
+const signerName = (instructor) => instructor.replace(/\s*\(.*\)\s*$/, '').trim();
+
+const demoCert = (monthsBack, instructor, type) => ({
   date: addMonths(todayISO(), -monthsBack),
   instructor,
   type,
-  sigName,
+  sigName: signerName(instructor), // unterschrieben hat, wer geschult hat
   sigImage: null,
   savedAt: null,
 });
@@ -195,47 +217,56 @@ const WDH = 'Wiederholungsschulung';
 const createDemoStaff = () => [
   {
     id: 's1', name: 'Sarah Meier', role: 'Dipl. Expertin Intensivpflege NDS', persNo: 'MA-4821', dept: 'A',
-    assigned: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9'],
+    assigned: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'],
     certs: {
-      d1: [demoCert(9, KELLER, ERST, 'Sarah Meier')],
-      d2: [demoCert(9, KELLER, ERST, 'Sarah Meier')],
-      d3: [demoCert(38, KELLER, ERST, 'Sarah Meier'), demoCert(14, 'T. Baumann (Hersteller)', WDH, 'Sarah Meier')],
-      d4: [demoCert(14, 'T. Baumann (Hersteller)', WDH, 'Sarah Meier')],
-      d5: [demoCert(19, 'Dr. L. Weber', WDH, 'Sarah Meier')],
-      d7: [demoCert(10, KELLER, ERST, 'Sarah Meier')],
-      d8: [demoCert(8, 'Labortechnik-Team', ERST, 'Sarah Meier')],
-      d9: [demoCert(10, KELLER, ERST, 'Sarah Meier')],
+      d1: [demoCert(9, KELLER, ERST)],
+      d2: [demoCert(38, KELLER, ERST), demoCert(14, 'T. Baumann (Hersteller)', WDH)],
+      d3: [demoCert(14, 'T. Baumann (Hersteller)', WDH)],
+      d4: [demoCert(19, 'Dr. L. Weber', WDH)],
+      d6: [demoCert(10, KELLER, ERST)],
     },
   },
   {
     id: 's2', name: 'Lucas Brunner', role: 'Dipl. Pflegefachmann HF', persNo: 'MA-5104', dept: 'A',
-    assigned: ['d1', 'd3', 'd4', 'd5', 'd7', 'd9'],
+    assigned: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'],
     certs: {
-      d1: [demoCert(11, KELLER, ERST, 'L. Brunner')],
-      d3: [demoCert(10, KELLER, ERST, 'L. Brunner')],
-      d4: [demoCert(10, KELLER, ERST, 'L. Brunner')],
-      d7: [demoCert(25, KELLER, ERST, 'L. Brunner')],
-      d9: [demoCert(9, KELLER, ERST, 'L. Brunner')],
+      d1: [demoCert(11, KELLER, ERST)],
+      d2: [demoCert(10, KELLER, ERST)],
+      d3: [demoCert(10, KELLER, ERST)],
+      d5: [demoCert(25, KELLER, ERST)],
+      d6: [demoCert(9, KELLER, ERST)],
     },
   },
   {
     id: 's3', name: 'Nadine Widmer', role: 'Pool-Mitarbeiterin, temporär', persNo: 'TMP-902', dept: 'A',
-    assigned: ['d1', 'd3', 'd4', 'd5', 'd9'],
+    assigned: ['d1', 'd2', 'd3', 'd4', 'd6'],
     certs: {
-      d3: [demoCert(8, KELLER, ERST, 'N. Widmer')],
-      d4: [demoCert(8, KELLER, ERST, 'N. Widmer')],
-      d9: [demoCert(8, KELLER, ERST, 'N. Widmer')],
+      d2: [demoCert(8, KELLER, ERST)],
+      d3: [demoCert(8, KELLER, ERST)],
+      d6: [demoCert(8, KELLER, ERST)],
+    },
+  },
+  {
+    id: 's5', name: 'Tim Hofmann', role: 'Dipl. Experte Intensivpflege NDS', persNo: 'MA-4410', dept: 'A',
+    assigned: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'],
+    certs: {
+      d1: [demoCert(5, KELLER, WDH)],
+      d2: [demoCert(6, 'T. Baumann (Hersteller)', WDH)],
+      d3: [demoCert(6, 'T. Baumann (Hersteller)', WDH)],
+      d4: [demoCert(4, 'Dr. L. Weber', WDH)],
+      d5: [demoCert(7, KELLER, ERST)],
+      d6: [demoCert(5, KELLER, ERST)],
     },
   },
   {
     id: 's4', name: 'Elena Rossi', role: 'Dipl. Pflegefachfrau HF', persNo: 'MA-3390', dept: 'B',
-    assigned: ['d3', 'd5', 'd9', 'd11', 'd12'],
+    assigned: ['d2', 'd4', 'd6', 'd7', 'd8'],
     certs: {
-      d3: [demoCert(9, VOGT, WDH, 'E. Rossi')],
-      d5: [demoCert(9, VOGT, WDH, 'E. Rossi')],
-      d9: [demoCert(10, VOGT, ERST, 'E. Rossi')],
-      d11: [demoCert(12, VOGT, ERST, 'E. Rossi')],
-      d12: [demoCert(12, VOGT, ERST, 'E. Rossi')],
+      d2: [demoCert(9, VOGT, WDH)],
+      d4: [demoCert(9, VOGT, WDH)],
+      d6: [demoCert(10, VOGT, ERST)],
+      d7: [demoCert(12, VOGT, ERST)],
+      d8: [demoCert(12, VOGT, ERST)],
     },
   },
 ];
@@ -297,6 +328,12 @@ function summarize(staffList, devices) {
   return { ...counts, total, ok, pct };
 }
 
+// true, wenn bei der Person etwas bald fällig, abgelaufen oder noch nicht geschult ist
+function hasDue(person, devices) {
+  const sum = summarize([person], devices);
+  return sum.dueSoon + sum.expired + sum.missing > 0;
+}
+
 async function sha256Hex(text) {
   const bytes = new TextEncoder().encode(text);
   const digest = await window.crypto.subtle.digest('SHA-256', bytes);
@@ -334,6 +371,10 @@ function useIsWide() {
 const norm = (s) => String(s || '').toLowerCase()
   .replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss')
   .replace(/[^a-z0-9]/g, '');
+
+// Für den Vergleich von Namen und Modellen: nur Gross-/Kleinschreibung und Leerzeichen angleichen.
+// Sonderzeichen bleiben, damit z.B. "X200" und "X200+" zwei verschiedene Modelle sind.
+const plain = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 // Teile mit Komma verbinden, leere auslassen
 const parts = (...items) => items.filter(Boolean).join(', ');
@@ -511,7 +552,7 @@ function findColumns(rows, fields, anchors) {
 }
 
 const DEVICE_FIELDS = [
-  { key: 'category', names: ['geratetyp', 'gerateart', 'geratekategorie', 'kategorie', 'anlagenbezeichnung', 'bezeichnung', 'anlage', 'gerat'] },
+  { key: 'category', names: ['geratetyp', 'gerateart', 'geratekategorie', 'kategorie', 'bezeichnung', 'gerat'] },
   { key: 'vendor', names: ['hersteller', 'lieferant', 'firma', 'marke'] },
   { key: 'risk', names: ['risikoklasse', 'risiko', 'klasse'] },
   { key: 'interval', names: ['intervall', 'wiederholung', 'turnus', 'monate'] },
@@ -555,16 +596,22 @@ function parseDeviceRows(rows) {
   const value = (row, key) => (found.cols[key] === undefined ? '' : (row[found.cols[key]] || '').trim());
   const items = [];
   let skipped = 0;
+  let filled = 0; // Gerätetyp war leer und stammt von der Zeile darüber
+  let unnamed = 0; // kein Modell angegeben, der Gerätetyp dient als Name
+  let lastCategory = '';
   rows.slice(found.headerRow + 1).forEach((row) => {
     let model = value(row, 'model');
     let category = value(row, 'category');
     if (!model && !category) { skipped += 1; return; }
-    if (!model) { model = category; category = ''; }
+    // Gruppierte Listen nennen den Gerätetyp nur in der ersten Zeile einer Gruppe.
+    if (category) lastCategory = category;
+    else if (lastCategory) { category = lastCategory; filled += 1; }
+    if (!model) { model = category; category = ''; unnamed += 1; }
     const risk = normalizeRisk(value(row, 'risk'));
     items.push({ model, category, vendor: value(row, 'vendor'), risk, interval: parseInterval(value(row, 'interval'), risk) });
   });
   if (items.length === 0) return { error: 'Unter der Kopfzeile stehen keine Geräte.' };
-  return { items, skipped, labels: found.labels, hasInterval: found.cols.interval !== undefined };
+  return { items, skipped, filled, unnamed, labels: found.labels, hasInterval: found.cols.interval !== undefined };
 }
 
 function parseStaffRows(rows) {
@@ -593,7 +640,7 @@ function parseStaffRows(rows) {
 // Vergleicht die importierten Geräte mit dem Bestand:
 // add = neu, link = in der Klinik bekannt, aber noch nicht in dieser Abteilung, same = schon vorhanden
 function planDeviceImport(items, devices, deptId) {
-  const keyOf = (d) => norm(d.model) + '|' + norm(d.vendor);
+  const keyOf = (d) => plain(d.model) + '|' + plain(d.vendor);
   const add = [];
   const link = [];
   let same = 0;
@@ -608,7 +655,7 @@ function planDeviceImport(items, devices, deptId) {
 }
 
 function planStaffImport(items, staff) {
-  const samePerson = (a, b) => (a.persNo && b.persNo ? norm(a.persNo) === norm(b.persNo) : norm(a.name) === norm(b.name));
+  const samePerson = (a, b) => (a.persNo && b.persNo ? norm(a.persNo) === norm(b.persNo) : plain(a.name) === plain(b.name));
   const add = [];
   let same = 0;
   items.forEach((item) => {
@@ -635,7 +682,7 @@ function downloadTemplate(fileName, rows) {
 const DEVICE_TEMPLATE = [
   ['Gerätetyp', 'Modell', 'Risikoklasse', 'Hersteller', 'Intervall (Monate)'],
   ['Infusionspumpe', 'Beispielpumpe 200', 'IIb', 'Beispiel Medical AG', '24'],
-  ['Patientenmonitor', 'Beispielmonitor X', 'IIa', 'Beispiel Medical AG', '24'],
+  ['Überwachungsmonitor', 'Beispielmonitor X', 'IIa', 'Beispiel Medical AG', '24'],
 ];
 const STAFF_TEMPLATE = [
   ['Name', 'Funktion', 'Personalnummer'],
@@ -735,17 +782,17 @@ function Modal({ label, onClose, children }) {
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 sm:items-center sm:p-4" onClick={onClose}>
+    <div className="gp-overlay fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 sm:items-center sm:p-4" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
         aria-label={label}
-        className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-6"
+        className="gp-sheet max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between gap-4">
           <Logo size="sm" />
-          <button onClick={onClose} aria-label="Fenster schliessen" className={FOCUS + 'flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900'}>
+          <button onClick={onClose} aria-label="Fenster schliessen" className={FOCUS + 'gp-no-print flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900'}>
             <Close className="h-5 w-5" />
           </button>
         </div>
@@ -1160,15 +1207,24 @@ function AssignToggle({ person, device, compact, onToggle }) {
   );
 }
 
+// Filter über der Matrix: alle Personen oder nur jene mit fälligen oder offenen Schulungen
+function DueFilter({ onlyDue, onChange, total, due }) {
+  const options = [
+    { id: 'all', label: 'Alle (' + total + ')' },
+    { id: 'due', label: 'Fällig oder offen (' + due + ')' },
+  ];
+  return <Segmented label="Personen filtern" options={options} value={onlyDue ? 'due' : 'all'} onChange={(id) => onChange(id === 'due')} />;
+}
+
 // editMode: Soll-Zuteilung ändern  |  readOnly: QM-Ansicht ohne Bearbeitung
-function Matrix({ staffList, devices, editMode, readOnly, onToggleAssign, onOpen }) {
+function Matrix({ staffList, devices, editMode, readOnly, emptyText, onToggleAssign, onOpen }) {
   const wide = useIsWide();
 
   if (devices.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Im Inventar dieser Abteilung stehen noch keine schulungspflichtigen Geräte.</p>;
   }
   if (staffList.length === 0) {
-    return <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Für diese Abteilung sind noch keine Mitarbeitenden erfasst.</p>;
+    return <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">{emptyText || 'Für diese Abteilung sind noch keine Mitarbeitenden erfasst.'}</p>;
   }
 
   /* Breite Bildschirme: Tabelle (Personen in Zeilen, Geräte in Spalten) */
@@ -1180,9 +1236,9 @@ function Matrix({ staffList, devices, editMode, readOnly, onToggleAssign, onOpen
         <table className="w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 align-bottom">
-              <th scope="col" className="sticky left-0 z-10 min-w-[200px] bg-slate-50 px-6 py-3 font-semibold text-slate-600">Mitarbeitende</th>
+              <th scope="col" className="sticky left-0 z-10 w-64 min-w-[200px] bg-slate-50 px-6 py-3 font-semibold text-slate-600">Mitarbeitende</th>
               {devices.map((device) => (
-                <th key={device.id} scope="col" title={parts(device.category, device.vendor)} className="w-24 min-w-[92px] px-1.5 py-3 text-center font-normal">
+                <th key={device.id} scope="col" title={parts(device.category, device.vendor)} className="min-w-[92px] px-1.5 py-3 text-center font-normal">
                   <div className="font-semibold leading-tight text-slate-900">{device.model}</div>
                   <div className="mt-1 text-xs leading-tight text-slate-500 [-webkit-hyphens:auto] [hyphens:auto]">{device.category}</div>
                   <div className="mt-1 text-xs text-slate-400">{riskText(device.risk)}</div>
@@ -1280,19 +1336,20 @@ function TrainingTab({ devices, staffList, preset, onSave }) {
   const [selected, setSelected] = useState(preset ? preset.staffIds : []);
   const [date, setDate] = useState(todayISO());
   const [instructor, setInstructor] = useState(DEFAULT_INSTRUCTOR);
-  const [signatures, setSignatures] = useState({});
+  const [signature, setSignature] = useState(null); // Unterschrift der Instruktorin oder des Instruktors
   const [error, setError] = useState('');
 
   const selectedStaff = staffList.filter((p) => selected.includes(p.id));
+  const allSelected = staffList.length > 0 && selectedStaff.length === staffList.length;
+  const signer = instructor.trim() || 'Instruktor/in';
 
   const togglePerson = (id) => {
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-    setSignatures((prev) => { const next = { ...prev }; delete next[id]; return next; });
     setError('');
   };
 
-  const setSignature = (id, image) => {
-    setSignatures((prev) => ({ ...prev, [id]: image }));
+  const toggleAll = () => {
+    setSelected(allSelected ? [] : staffList.map((p) => p.id));
     setError('');
   };
 
@@ -1302,19 +1359,15 @@ function TrainingTab({ devices, staffList, preset, onSave }) {
     if (!date || date > todayISO()) return setError('Bitte ein Schulungsdatum angeben, das nicht in der Zukunft liegt.');
     if (!instructor.trim()) return setError('Bitte angeben, wer geschult hat.');
     if (selectedStaff.length === 0) return setError('Bitte mindestens eine geschulte Person auswählen.');
-    const unsigned = selectedStaff.filter((p) => !signatures[p.id]);
-    if (unsigned.length > 0) return setError('Es fehlt noch die Unterschrift von: ' + unsigned.map((p) => p.name).join(', '));
-
-    const signed = {};
-    selectedStaff.forEach((p) => { signed[p.id] = signatures[p.id]; });
-    return onSave({ deviceId, date, instructor: instructor.trim(), signatures: signed });
+    if (!signature) return setError('Es fehlt noch die Unterschrift der Instruktorin oder des Instruktors.');
+    return onSave({ deviceId, date, instructor: instructor.trim(), staffIds: selectedStaff.map((p) => p.id), signature });
   };
 
   return (
     <form onSubmit={submit} className={ui.panel + ' max-w-2xl space-y-6 p-5 sm:p-6'}>
       <div>
         <h2 className="text-lg font-semibold text-slate-900">Schulung erfassen</h2>
-        <p className="text-sm text-slate-500">Für eine Person oder eine ganze Gruppe. Jede geschulte Person unterschreibt selbst.</p>
+        <p className="text-sm text-slate-500">Für eine Person oder eine ganze Gruppe. Wer geschult hat, unterschreibt einmal für alle.</p>
       </div>
 
       <div>
@@ -1337,48 +1390,43 @@ function TrainingTab({ devices, staffList, preset, onSave }) {
         </div>
       </div>
 
-      <fieldset>
-        <legend className={ui.label}>Geschulte Mitarbeitende</legend>
+      <div role="group" aria-label="Geschulte Mitarbeitende">
+        <div className="mb-1.5 flex items-baseline justify-between gap-3">
+          <span className="text-sm font-medium text-slate-700">Geschulte Mitarbeitende</span>
+          {staffList.length > 1 && (
+            <button type="button" onClick={toggleAll} className={ui.link}>{allSelected ? 'Auswahl aufheben' : 'Alle auswählen'}</button>
+          )}
+        </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {staffList.map((p) => {
             const checked = selected.includes(p.id);
+            const isRepeat = (p.certs[deviceId] || []).length > 0;
             return (
               <label key={p.id} className={'flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm ' + (checked ? 'border-[#17324D] bg-slate-50' : 'border-slate-300 bg-white')}>
                 <input type="checkbox" checked={checked} onChange={() => togglePerson(p.id)} className="h-4 w-4 accent-[#17324D]" />
                 <span className="font-medium text-slate-900">{p.name}</span>
+                <span className="ml-auto whitespace-nowrap text-xs text-slate-500">{isRepeat ? 'Wiederholung' : 'Erstschulung'}</span>
               </label>
             );
           })}
         </div>
-      </fieldset>
+      </div>
 
       <div>
-        <div className={ui.label}>Unterschriften</div>
-        {selectedStaff.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-500">
-            Wählen Sie oben die geschulten Personen aus. Danach erscheint hier pro Person ein Unterschriftsfeld.
-          </p>
-        ) : (
-          <div className="space-y-5">
-            {selectedStaff.map((p) => {
-              const isRepeat = (p.certs[deviceId] || []).length > 0;
-              return (
-                <div key={p.id + deviceId}>
-                  <div className="mb-1.5 flex items-baseline justify-between gap-3 text-sm">
-                    <span className="font-semibold text-slate-900">{p.name}</span>
-                    <span className="text-slate-500">{isRepeat ? WDH : ERST}</span>
-                  </div>
-                  <SignaturePad name={p.name} onChange={(image) => setSignature(p.id, image)} />
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <div className={ui.label}>Unterschrift Instruktor/in</div>
+        <p className="mb-2 text-sm text-slate-500">
+          {selectedStaff.length === 0
+            ? 'Eine Unterschrift gilt für alle ausgewählten Personen.'
+            : signer + ' bestätigt die Schulung für ' + plural(selectedStaff.length, 'Person', 'Personen') + '.'}
+        </p>
+        <SignaturePad name={signer} onChange={(image) => { setSignature(image); setError(''); }} />
       </div>
 
       {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800">{error}</p>}
 
-      <button type="submit" className={ui.btnPrimary + ' w-full'}>Schulung speichern</button>
+      <button type="submit" className={ui.btnPrimary + ' w-full'}>
+        {selectedStaff.length > 1 ? 'Schulung für ' + selectedStaff.length + ' Personen speichern' : 'Schulung speichern'}
+      </button>
     </form>
   );
 }
@@ -1493,6 +1541,8 @@ function InventoryTab({ deptId, devices, allDevices, onImport }) {
     if (plan.add.length) facts.push(plural(plan.add.length, 'neues Gerät', 'neue Geräte'));
     if (linked.length) facts.push(plural(linked.length, 'Gerät', 'Geräte') + ' aus dem Klinik-Inventar, neu für diese Abteilung');
     if (plan.same) facts.push(plural(plan.same, 'Gerät', 'Geräte') + ' bereits vorhanden, ' + (plan.same === 1 ? 'bleibt' : 'bleiben') + ' unverändert');
+    if (draft.filled) facts.push('Bei ' + plural(draft.filled, 'Gerät', 'Geräten') + ' war der Gerätetyp leer und wurde von der Zeile darüber übernommen');
+    if (draft.unnamed) facts.push(plural(draft.unnamed, 'Gerät', 'Geräte') + ' ohne Modell: Der Gerätetyp dient als Name');
     if (draft.skipped) facts.push(plural(draft.skipped, 'Zeile', 'Zeilen') + ' ohne Bezeichnung übersprungen');
     if (!draft.hasInterval && plan.add.length) facts.push('Ohne Intervall-Spalte gilt: Wiederholung alle ' + DEFAULT_INTERVAL + ' Monate');
     dialog = (
@@ -1638,7 +1688,190 @@ function TeamTab({ deptId, staffList, allStaff, devices, onImport }) {
   );
 }
 
-/* ---------- 6.10 Stationsleitung ---------- */
+/* ---------- 6.10 Stationsleitung: Erinnerungen ---------- */
+
+const leadLabel = (days) => {
+  const option = LEAD_OPTIONS.find((o) => o.days === days);
+  return option ? option.label : plural(days, 'Tag', 'Tage');
+};
+
+// Was würde heute gemeldet? Schulungen, die innerhalb der längsten Vorwarnzeit ablaufen,
+// dazu auf Wunsch abgelaufene und fehlende.
+function reminderItems(staffList, devices, settings) {
+  const maxLead = settings.leads.length ? Math.max.apply(null, settings.leads) : -1;
+  const items = [];
+  staffList.forEach((person) => {
+    person.assigned.forEach((deviceId) => {
+      const device = devices.find((d) => d.id === deviceId);
+      if (!device || !needsTraining(device)) return;
+      const status = getStatus(device, person.certs[deviceId]);
+      if (status.key === 'missing') { if (settings.missing) items.push({ kind: 'missing', person, device, status }); }
+      else if (status.daysLeft < 0) { if (settings.expired) items.push({ kind: 'expired', person, device, status }); }
+      else if (status.daysLeft <= maxLead) items.push({ kind: 'due', person, device, status });
+    });
+  });
+  const order = { due: 0, expired: 1, missing: 2 };
+  return items.sort((a, b) => order[a.kind] - order[b.kind] || (a.status.daysLeft || 0) - (b.status.daysLeft || 0));
+}
+
+function reminderLine(item) {
+  const who = item.person.name + ', ' + item.device.model + ': ';
+  if (item.kind === 'missing') return who + 'noch keine Schulung erfasst';
+  if (item.kind === 'expired') return who + 'abgelaufen seit ' + formatDate(item.status.validUntil);
+  const days = item.status.daysLeft;
+  return who + 'gültig bis ' + formatDate(item.status.validUntil) + (days === 0 ? ' (läuft heute ab)' : ' (noch ' + plural(days, 'Tag', 'Tage') + ')');
+}
+
+// Link, der die Übersicht als fertige E-Mail im eigenen Mailprogramm öffnet
+function reminderMailto(email, dept, items) {
+  const groups = [
+    { kind: 'due', title: 'Läuft bald ab' },
+    { kind: 'expired', title: 'Abgelaufen' },
+    { kind: 'missing', title: 'Schulung fehlt' },
+  ];
+  const lines = ['Guten Tag', '', 'Stand ' + formatDate(todayISO()) + ' stehen in der ' + dept.name + ' folgende Schulungen an:'];
+  let room = 30; // Mailprogramme vertragen nur begrenzt lange Links
+  groups.forEach((group) => {
+    const list = items.filter((item) => item.kind === group.kind);
+    if (list.length === 0) return;
+    const shown = list.slice(0, Math.max(room, 0));
+    lines.push('', group.title + ' (' + list.length + ')');
+    shown.forEach((item) => lines.push('- ' + reminderLine(item)));
+    if (list.length > shown.length) lines.push('- und ' + (list.length - shown.length) + ' weitere');
+    room -= shown.length;
+  });
+  lines.push('', 'Details im Gerätepass: geraetepass.ch');
+  const subject = 'Gerätepass ' + dept.short + ': ' + plural(items.length, 'Schulung', 'Schulungen') + ' zu planen';
+  return 'mailto:' + email + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(lines.join('\r\n'));
+}
+
+function ReminderModal({ dept, staffList, devices, settings, onSave, onClose }) {
+  const [draft, setDraft] = useState(settings);
+  const [customDays, setCustomDays] = useState('');
+  const [error, setError] = useState('');
+
+  const change = (patch) => { setDraft((prev) => ({ ...prev, ...patch })); setError(''); };
+  const toggleLead = (days) => change({ leads: draft.leads.includes(days) ? draft.leads.filter((d) => d !== days) : [...draft.leads, days] });
+
+  const addCustom = () => {
+    const days = parseInt(customDays, 10);
+    if (!(days >= 1 && days <= 730)) { setError('Bitte eine Anzahl Tage zwischen 1 und 730 eingeben.'); return; }
+    if (!draft.leads.includes(days)) change({ leads: [...draft.leads, days] });
+    setCustomDays('');
+  };
+
+  const email = draft.email.trim();
+  const emailOk = EMAIL_PATTERN.test(email);
+  const items = reminderItems(staffList, devices, draft);
+  const shown = items.slice(0, 5);
+  // Feste Auswahl plus selbst hinzugefügte Werte, nach Dauer sortiert
+  const chips = LEAD_OPTIONS.map((o) => o.days)
+    .concat(draft.leads.filter((days) => !LEAD_OPTIONS.some((o) => o.days === days)))
+    .sort((a, b) => a - b);
+
+  const save = () => {
+    if (email && !emailOk) { setError('Bitte eine gültige E-Mail-Adresse eingeben.'); return; }
+    onSave({ ...draft, email });
+  };
+
+  return (
+    <Modal label="Erinnerungen" onClose={onClose}>
+      <h2 className="text-xl font-semibold tracking-tight text-slate-900">Erinnerungen</h2>
+      <p className="text-sm text-slate-500">{dept.name}. Die Stationsleitung erhält eine E-Mail, bevor Schulungen ablaufen.</p>
+
+      <div className="mt-5">
+        <label htmlFor="gp-rem-email" className={ui.label}>E-Mail-Adresse der Stationsleitung</label>
+        <input
+          id="gp-rem-email"
+          type="email"
+          autoComplete="email"
+          placeholder="name@klinik.ch"
+          value={draft.email}
+          onChange={(e) => change({ email: e.target.value })}
+          className={ui.input}
+        />
+      </div>
+
+      <div className="mt-5" role="group" aria-label="Vorwarnung vor Ablauf">
+        <div className={ui.label}>Vorwarnung vor Ablauf</div>
+        <div className="flex flex-wrap gap-2">
+          {chips.map((days) => {
+            const active = draft.leads.includes(days);
+            return (
+              <button
+                key={days}
+                type="button"
+                aria-pressed={active}
+                onClick={() => toggleLead(days)}
+                className={FOCUS + 'inline-flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-semibold transition-colors ' + (active ? 'border-[#17324D] bg-[#17324D] text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50')}
+              >
+                {active && <Check className="h-3.5 w-3.5" />} {leadLabel(days)}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+          <label htmlFor="gp-rem-custom">Eigener Wert:</label>
+          <input
+            id="gp-rem-custom"
+            type="number"
+            min="1"
+            max="730"
+            inputMode="numeric"
+            placeholder="45"
+            value={customDays}
+            onChange={(e) => { setCustomDays(e.target.value); setError(''); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }}
+            className={ui.input.replace('w-full ', 'w-24 ')}
+          />
+          <span>Tage vorher</span>
+          <button type="button" onClick={addCustom} className={ui.btnSecondary}>Hinzufügen</button>
+        </div>
+      </div>
+
+      <div className="mt-5" role="group" aria-label="Zusätzlich melden">
+        <div className={ui.label}>Zusätzlich melden</div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {[['expired', 'Abgelaufene Schulungen'], ['missing', 'Fehlende Schulungen']].map(([key, label]) => (
+            <label key={key} className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-900">
+              <input type="checkbox" checked={draft[key]} onChange={(e) => change({ [key]: e.target.checked })} className="h-4 w-4 accent-[#17324D]" />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+        <div className="font-semibold text-slate-900">
+          {items.length === 0 ? 'Stand heute gibt es nichts zu melden.' : 'Stand heute in der Meldung: ' + plural(items.length, 'Schulung', 'Schulungen')}
+        </div>
+        {shown.length > 0 && (
+          <ul className="mt-1.5 space-y-1 text-slate-600">
+            {shown.map((item) => <li key={item.person.id + item.device.id}>{reminderLine(item)}</li>)}
+            {items.length > shown.length && <li>und {items.length - shown.length} weitere</li>}
+          </ul>
+        )}
+      </div>
+
+      <p className="mt-3 text-sm text-slate-500">
+        In dieser Demo wird noch keine E-Mail automatisch verschickt. Die aktuelle Übersicht lässt sich aber sofort im eigenen Mailprogramm öffnen.
+      </p>
+
+      {error && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800">{error}</p>}
+
+      <div className="mt-5 flex flex-col gap-2 sm:flex-row-reverse">
+        <button type="button" onClick={save} className={ui.btnPrimary + ' sm:flex-1'}>Speichern</button>
+        {emailOk && items.length > 0 ? (
+          <a href={reminderMailto(email, dept, items)} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}><Mail /> E-Mail jetzt erstellen</a>
+        ) : (
+          <button type="button" disabled title="Zuerst eine E-Mail-Adresse eingeben" className={ui.btnSecondary + ' min-h-[44px] cursor-not-allowed opacity-50 sm:flex-1'}><Mail /> E-Mail jetzt erstellen</button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- 6.11 Stationsleitung ---------- */
 
 const LINE_TABS = [
   { id: 'matrix', label: 'Matrix' },
@@ -1647,9 +1880,14 @@ const LINE_TABS = [
   { id: 'team', label: 'Team' },
 ];
 
-function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, preset, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff }) {
+function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder }) {
   const [editMode, setEditMode] = useState(false);
+  const [onlyDue, setOnlyDue] = useState(false); // Filter: nur Personen mit fälligen oder offenen Schulungen
+  const [showReminder, setShowReminder] = useState(false);
   const trainDevices = deptDevices.filter(needsTraining);
+  const dueStaff = staffList.filter((person) => hasDue(person, deptDevices));
+  // Beim Bearbeiten der Zuteilung sind immer alle Personen sichtbar
+  const shownStaff = onlyDue && !editMode ? dueStaff : staffList;
 
   // Nachweis vorhanden -> Nachweis anzeigen. Noch keiner -> direkt zur Schulung.
   const openField = (person, device, hasRecord) => {
@@ -1666,11 +1904,14 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{deptById(deptId).name}</h1>
             <p className="mt-1 text-sm text-slate-600">Geräte zuteilen, Schulungen erfassen und das Inventar der Station führen.</p>
           </div>
-          <div className="w-full sm:w-auto">
+          <div className="w-full sm:w-72">
             <label htmlFor="gp-dept" className="mb-1 block text-xs font-medium text-slate-500">Abteilung</label>
-            <select id="gp-dept" value={deptId} onChange={(e) => onDept(e.target.value)} className={ui.input + ' sm:w-72'}>
+            <select id="gp-dept" value={deptId} onChange={(e) => onDept(e.target.value)} className={ui.input}>
               {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
+            <button type="button" onClick={() => setShowReminder(true)} className={ui.btnSecondary + ' mt-2 w-full'}>
+              <Bell /> {reminder.email ? 'Erinnerungen: eingerichtet' : 'Erinnerungen einrichten'}
+            </button>
           </div>
         </div>
         <div className="mt-5 border-t border-slate-200 pt-5">
@@ -1693,11 +1934,21 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
                   : 'Status antippen, um den Nachweis zu sehen oder eine fehlende Schulung zu erfassen.'}
               </p>
             </div>
-            <button onClick={() => setEditMode(!editMode)} className={editMode ? ui.btnPrimary : ui.btnSecondary}>
-              {editMode ? <><Check /> Zuteilung fertig</> : <><Pencil /> Zuteilung bearbeiten</>}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              {!editMode && <DueFilter onlyDue={onlyDue} onChange={setOnlyDue} total={staffList.length} due={dueStaff.length} />}
+              <button onClick={() => setEditMode(!editMode)} className={editMode ? ui.btnPrimary : ui.btnSecondary}>
+                {editMode ? <><Check /> Zuteilung fertig</> : <><Pencil /> Zuteilung bearbeiten</>}
+              </button>
+            </div>
           </div>
-          <Matrix staffList={staffList} devices={trainDevices} editMode={editMode} onToggleAssign={onToggleAssign} onOpen={openField} />
+          <Matrix
+            staffList={shownStaff}
+            devices={trainDevices}
+            editMode={editMode}
+            emptyText={onlyDue && staffList.length > 0 ? 'In dieser Abteilung hat niemand fällige oder offene Schulungen.' : ''}
+            onToggleAssign={onToggleAssign}
+            onOpen={openField}
+          />
         </div>
       )}
 
@@ -1708,13 +1959,27 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
       {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} />}
 
       {tab === 'team' && <TeamTab deptId={deptId} staffList={staffList} allStaff={allStaff} devices={deptDevices} onImport={onImportStaff} />}
+
+      {showReminder && (
+        <ReminderModal
+          dept={deptById(deptId)}
+          staffList={staffList}
+          devices={deptDevices}
+          settings={reminder}
+          onSave={(settings) => { onSaveReminder(settings); setShowReminder(false); }}
+          onClose={() => setShowReminder(false)}
+        />
+      )}
     </div>
   );
 }
 
-/* ---------- 6.11 QM: Klinik-Übersicht (nur lesen) ---------- */
+/* ---------- 6.12 QM: Klinik-Übersicht (nur lesen) ---------- */
 
 function QmView({ staff, devices, log, onShowCert }) {
+  const [onlyDue, setOnlyDue] = useState(false);
+  const dueCount = staff.filter((person) => hasDue(person, devices)).length;
+
   return (
     <div className="space-y-5">
       <div className={ui.panel + ' p-5 sm:p-6'}>
@@ -1725,6 +1990,9 @@ function QmView({ staff, devices, log, onShowCert }) {
         </p>
         <div className="mt-5 border-t border-slate-200 pt-5">
           <Progress sum={summarize(staff, devices)} label="Gesamte Klinik" />
+        </div>
+        <div className="mt-5 sm:inline-block">
+          <DueFilter onlyDue={onlyDue} onChange={setOnlyDue} total={staff.length} due={dueCount} />
         </div>
       </div>
 
@@ -1739,8 +2007,9 @@ function QmView({ staff, devices, log, onShowCert }) {
               <Progress sum={summarize(list, deptDevices)} />
             </div>
             <Matrix
-              staffList={list}
+              staffList={onlyDue ? list.filter((person) => hasDue(person, deptDevices)) : list}
               devices={deptDevices.filter(needsTraining)}
+              emptyText={onlyDue && list.length > 0 ? 'In dieser Abteilung hat niemand fällige oder offene Schulungen.' : ''}
               readOnly
               onOpen={(person, device) => onShowCert(person.id, device.id)}
             />
@@ -1770,13 +2039,19 @@ function QmView({ staff, devices, log, onShowCert }) {
   );
 }
 
-/* ---------- 6.12 Schulungsnachweis (Fenster) ---------- */
+/* ---------- 6.13 Schulungsnachweis (Fenster) ---------- */
 
 function CertificateModal({ person, device, onClose, onRetrain }) {
   const records = person.certs[device.id] || [];
   const latest = records[records.length - 1];
   const earlier = records.slice(0, -1).reverse();
   const status = getStatus(device, records);
+
+  // Solange der Nachweis offen ist, gelten die Druckregeln: nur der Nachweis kommt aufs Blatt.
+  useEffect(() => {
+    document.documentElement.classList.add('gp-cert-open');
+    return () => document.documentElement.classList.remove('gp-cert-open');
+  }, []);
 
   if (!latest) return null;
 
@@ -1811,10 +2086,10 @@ function CertificateModal({ person, device, onClose, onRetrain }) {
       </dl>
 
       <div className="mt-4">
-        <div className="mb-1.5 text-sm text-slate-500">Unterschrift</div>
+        <div className="mb-1.5 text-sm text-slate-500">Unterschrift Instruktor/in</div>
         <div className="flex min-h-[72px] items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2">
           {latest.sigImage ? (
-            <img src={latest.sigImage} alt={'Unterschrift von ' + person.name} className="h-16 max-w-full" />
+            <img src={latest.sigImage} alt={'Unterschrift von ' + latest.sigName} className="h-16 max-w-full" />
           ) : (
             <span className="font-serif text-xl italic text-[#17324D]">{latest.sigName}</span>
           )}
@@ -1835,7 +2110,13 @@ function CertificateModal({ person, device, onClose, onRetrain }) {
         </div>
       )}
 
-      <div className="mt-6 flex flex-col gap-2 sm:flex-row-reverse">
+      <p className="gp-print-only mt-6 hidden text-xs text-slate-500">Ausdruck vom {formatDate(todayISO())}, geraetepass.ch</p>
+
+      <button type="button" onClick={() => window.print()} className={ui.link + ' gp-no-print mt-5 min-h-[32px]'}>
+        <Printer /> Drucken oder als PDF speichern
+      </button>
+
+      <div className="gp-no-print mt-4 flex flex-col gap-2 sm:flex-row-reverse">
         {onRetrain && (
           <button onClick={onRetrain} className={ui.btnPrimary + ' sm:flex-1'}>Wiederholung erfassen</button>
         )}
@@ -1863,6 +2144,7 @@ export default function App() {
   // Daten
   const [devices, setDevices] = useState(INITIAL_DEVICES);
   const [staff, setStaff] = useState(createDemoStaff);
+  const [reminders, setReminders] = useState({}); // Erinnerungs-Einstellungen pro Abteilung
   const [log, setLog] = useState([]);
   const [toast, setToast] = useState(null);
 
@@ -1928,9 +2210,10 @@ export default function App() {
     addLog(actor + ': Zuteilung ' + (wasAssigned ? 'entfernt' : 'hinzugefügt') + ', ' + person.name + ', ' + device.model);
   };
 
-  const saveTraining = ({ deviceId, date, instructor, signatures }) => {
+  // Eine Schulung für eine oder mehrere Personen. Unterschrieben hat, wer geschult hat.
+  const saveTraining = ({ deviceId, date, instructor, staffIds, signature }) => {
     const device = devices.find((d) => d.id === deviceId);
-    const trainedIds = Object.keys(signatures);
+    const trainedIds = staffIds;
     const savedAt = new Date().toISOString();
 
     setStaff((prev) => prev.map((p) => {
@@ -1940,8 +2223,8 @@ export default function App() {
         date,
         instructor,
         type: earlier.length > 0 ? WDH : ERST,
-        sigName: p.name,
-        sigImage: signatures[p.id],
+        sigName: signerName(instructor),
+        sigImage: signature,
         savedAt,
       };
       // Alte Nachweise bleiben erhalten, sortiert nach Datum (neuster zuletzt)
@@ -1977,6 +2260,13 @@ export default function App() {
     }))));
     addLog(actor + ': Mitarbeiterliste importiert, ' + plural(people.length, 'Person', 'Personen') + ' aufgenommen');
     notify('Mitarbeiterliste importiert: ' + plural(people.length, 'Person', 'Personen') + ' aufgenommen.');
+  };
+
+  const saveReminder = (settings) => {
+    setReminders((prev) => ({ ...prev, [deptId]: settings }));
+    const leads = settings.leads.slice().sort((a, b) => b - a).map(leadLabel).join(', ');
+    addLog(actor + ': Erinnerungen ' + (settings.email ? 'eingestellt' + (leads ? ', Vorwarnung ' + leads : '') : 'ausgeschaltet'));
+    notify(settings.email ? 'Erinnerungen gespeichert.' : 'Erinnerungen ausgeschaltet.');
   };
 
   const showCert = (personId, deviceId) => setCertView({ personId, deviceId });
@@ -2016,6 +2306,7 @@ export default function App() {
             allDevices={devices}
             tab={lineTab}
             preset={trainPreset}
+            reminder={reminders[deptId] || DEFAULT_REMINDER}
             onTab={(next) => { setLineTab(next); if (next !== 'train') setTrainPreset(null); }}
             onDept={changeDept}
             onToggleAssign={toggleAssign}
@@ -2024,6 +2315,7 @@ export default function App() {
             onSaveTraining={saveTraining}
             onImportDevices={importDevices}
             onImportStaff={importStaff}
+            onSaveReminder={saveReminder}
           />
         )}
 
