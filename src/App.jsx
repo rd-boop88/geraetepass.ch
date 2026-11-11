@@ -45,6 +45,9 @@ const LEAD_OPTIONS = [
 const DEFAULT_REMINDER = { email: '', leads: [90, 30], expired: true, missing: true };
 const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i;
 
+// Name der Klinik, erscheint auf der Startseite und auf dem Gerätepass
+const CLIENT_NAME = 'Musterklinik Schweiz AG';
+
 const NON_MEDICAL = 'kein Medizinprodukt';
 const DEFAULT_INSTRUCTOR = 'M. Keller (Berufsbildner)';
 
@@ -53,15 +56,13 @@ const DEPARTMENTS = [
   { id: 'B', name: 'Abteilung B – Bettenstation', short: 'Bettenstation' },
 ];
 
-// Logo: ein Ausweis (Pass) mit Prüfhaken. Markenfarbe Dunkelblau #17324D,
-// der Haken trägt dasselbe Grün wie der Status "Gültig".
+// Logo: Die Pulslinie eines Geräts endet im Prüfhaken. Markenfarbe Dunkelblau #17324D,
+// der Haken ist grün wie der Status "Gültig".
 const LOGO_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">' +
-  '<defs><clipPath id="p"><rect x="6" y="5" width="30" height="38" rx="8"/></clipPath></defs>' +
-  '<rect x="6" y="5" width="30" height="38" rx="8" fill="#17324D"/>' +
-  '<rect x="16" y="10.5" width="10" height="3.5" rx="1.75" fill="#fff" opacity=".9"/>' +
-  '<path d="M14.5 28l6.5 6.5L41 14" fill="none" stroke="#fff" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round" clip-path="url(#p)"/>' +
-  '<path d="M14.5 28l6.5 6.5L41 14" fill="none" stroke="#10B981" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 40 40">' +
+  '<rect x="4" y="4" width="40" height="40" rx="11" fill="#17324D"/>' +
+  '<path d="M9 27h6.5l3.5-9.5 5 16.5 3.5-8" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '<path d="M27.5 26l4 4.5 8.5-12" fill="none" stroke="#34D399" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"/>' +
   '</svg>';
 const LOGO_URL = 'data:image/svg+xml,' + encodeURIComponent(LOGO_SVG);
 
@@ -701,7 +702,7 @@ function Logo({ size }) {
           <span className="font-bold">pass</span>
           <span className="font-medium text-slate-400">.ch</span>
         </div>
-        {large && <div className="mt-1.5 text-sm text-slate-500">Swiss MedTech Documentation</div>}
+        {large && <div className="mt-1.5 text-sm text-slate-500">Schulungsnachweis & Compliance</div>}
       </div>
     </div>
   );
@@ -730,7 +731,7 @@ function Progress({ sum, label }) {
   if (sum.missing) notes.push(sum.missing + ' fehlend');
   const summary = sum.total === 0
     ? 'Noch keine Geräte zugeteilt'
-    : sum.ok + ' von ' + sum.total + ' Schulungen gültig (' + sum.pct + ' %)';
+    : sum.ok + ' von ' + plural(sum.total, 'Schulung', 'Schulungen') + ' gültig (' + sum.pct + ' %)';
   return (
     <div>
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -982,7 +983,7 @@ function RoleSelect({ staff, selectedStaffId, onSelectStaff, onStart }) {
             <div className="flex items-center gap-1.5 font-medium text-emerald-700">
               <Shield /> MepV & Swissmedic konform
             </div>
-            <div className="mt-0.5">Mandant: Musterklinik Schweiz AG (Demo)</div>
+            <div className="mt-0.5">Mandant: {CLIENT_NAME} (Demo)</div>
           </div>
         </div>
 
@@ -1067,6 +1068,95 @@ function Header({ role, onRole, onRoleSelect, onLock }) {
 
 /* ---------- 6.4 Mitarbeitende: Mein Gerätepass ---------- */
 
+// Der Gerätepass als Ausweis: Name, Funktion, Abteilung und Stand der Schulungen auf einen Blick.
+function PassCard({ person, rows }) {
+  const count = { valid: 0, dueSoon: 0, expired: 0, missing: 0 };
+  rows.forEach((row) => { count[row.status.key] += 1; });
+  const open = count.expired + count.missing; // abgelaufen oder noch nie geschult
+  const ok = count.valid + count.dueSoon;
+
+  // Gesamtstand in einem Satz, in der Farbe des dringendsten Status
+  let overall = null;
+  if (open > 0) overall = { key: 'expired', text: plural(open, 'Schulung', 'Schulungen') + ' offen' };
+  else if (count.dueSoon > 0) overall = { key: 'dueSoon', text: plural(count.dueSoon, 'Schulung', 'Schulungen') + ' bald fällig' };
+  else if (rows.length > 0) overall = { key: 'valid', text: 'Alle Schulungen gültig' };
+  const OverallIcon = overall ? STATUS[overall.key].icon : null;
+
+  // Initialen als Platzhalter für das Foto: erster Buchstabe von Vor- und Nachname
+  const words = person.name.split(/\s+/).filter(Boolean);
+  const initials = words.filter((word, i) => i === 0 || i === words.length - 1).map((word) => word.charAt(0)).join('').toUpperCase();
+
+  // Ein Punkt pro Gerät, Dringendes zuerst
+  const dots = rows.slice(0, 24);
+  const dotCls = { valid: 'bg-emerald-400', dueSoon: 'bg-amber-400', expired: 'bg-red-400', missing: 'border border-dashed border-white/70' };
+
+  return (
+    <section aria-label="Gerätepass" className="relative flex min-h-[16rem] flex-col justify-between overflow-hidden rounded-2xl bg-[#17324D] p-5 text-white shadow-lg sm:p-6">
+      {/* Wasserzeichen: die Linie aus dem Logo */}
+      <svg aria-hidden="true" viewBox="4 4 40 40" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none absolute -bottom-12 -right-8 h-60 w-60 opacity-[0.07]">
+        <path d="M9 27h6.5l3.5-9.5 5 16.5 3.5-8l4 4.5 8.5-12" />
+      </svg>
+
+      <div className="relative flex items-start justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <svg aria-hidden="true" viewBox="4 4 40 40" className="h-8 w-8 shrink-0">
+            <rect x="4" y="4" width="40" height="40" rx="11" fill="#fff" fillOpacity="0.14" />
+            <path d="M9 27h6.5l3.5-9.5 5 16.5 3.5-8" fill="none" stroke="#fff" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M27.5 26l4 4.5 8.5-12" fill="none" stroke="#34D399" strokeWidth="3.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <div className="min-w-0 leading-tight">
+            <div className="text-sm tracking-tight">
+              <span className="font-medium">geraete</span><span className="font-bold">pass</span><span className="font-medium text-white/50">.ch</span>
+            </div>
+            <div className="truncate text-xs text-white/70">{CLIENT_NAME}</div>
+          </div>
+        </div>
+        <div className="whitespace-nowrap text-sm font-semibold text-white">Gerätepass</div>
+      </div>
+
+      <div className="relative mt-6 flex items-center gap-4">
+        <div aria-hidden="true" className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-xl font-semibold tracking-wide ring-1 ring-white/20">{initials}</div>
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold leading-tight tracking-tight text-white">{person.name}</h1>
+          {person.role && <p className="mt-0.5 text-sm text-white/75">{person.role}</p>}
+        </div>
+      </div>
+
+      <dl className="relative mt-5 grid grid-cols-2 gap-x-6 text-sm">
+        <div>
+          <dt className="text-xs text-white/60">Personal-Nr.</dt>
+          <dd className="font-medium">{person.persNo || 'nicht angegeben'}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-white/60">Abteilung</dt>
+          <dd className="font-medium">{deptById(person.dept).short}</dd>
+        </div>
+      </dl>
+
+      <div className="relative mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-white/15 pt-4">
+        <div>
+          {rows.length > 0 && (
+            <div aria-hidden="true" className="mb-1.5 flex flex-wrap items-center gap-1.5">
+              {dots.map((row) => (
+                <span key={row.device.id} title={row.device.model + ': ' + STATUS[row.status.key].label} className={'h-3 w-3 rounded-full ' + dotCls[row.status.key]} />
+              ))}
+              {rows.length > dots.length && <span className="text-xs text-white/70">+{rows.length - dots.length}</span>}
+            </div>
+          )}
+          <div className="text-sm text-white/80">
+            {rows.length === 0 ? 'Noch keine Geräte zugeteilt' : ok + ' von ' + plural(rows.length, 'Schulung', 'Schulungen') + ' gültig'}
+          </div>
+        </div>
+        {overall && (
+          <span className={'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-semibold ' + STATUS[overall.key].chip}>
+            <OverallIcon className="h-4 w-4" /> {overall.text}
+          </span>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function EmployeeView({ person, staff, devices, onSelectStaff, onShowCert }) {
   const rows = person.assigned
     .map((id) => devices.find((d) => d.id === id))
@@ -1077,25 +1167,32 @@ function EmployeeView({ person, staff, devices, onSelectStaff, onShowCert }) {
     })
     .sort((a, b) => URGENCY[a.status.key] - URGENCY[b.status.key]);
 
+  // Die gültige Schulung, die als nächste abläuft
+  const next = rows.filter((row) => row.status.daysLeft >= 0).sort((a, b) => a.status.daysLeft - b.status.daysLeft)[0];
+
   return (
     <div className="space-y-5">
-      <div className={ui.panel + ' p-5 sm:p-6'}>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="mb-0.5 text-sm font-medium text-slate-500">Mein Gerätepass</p>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{person.name}</h1>
-            <p className="mt-1 text-sm text-slate-600">{person.role}</p>
-            <p className="text-sm text-slate-600">{parts(person.persNo && 'Personal-Nr. ' + person.persNo, deptById(person.dept).name)}</p>
+      <div className="grid gap-5 md:grid-cols-[minmax(0,27rem)_minmax(0,1fr)]">
+        <PassCard person={person} rows={rows} />
+
+        <div className={ui.panel + ' flex flex-col justify-between gap-6 p-5 sm:p-6'}>
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Stand meiner Schulungen</h2>
+            <div className="mt-3">
+              <Progress sum={summarize([person], devices)} />
+            </div>
+            {next && (
+              <p className="mt-4 text-sm text-slate-600">
+                Nächste Wiederholung: {next.device.model}, gültig bis {formatDate(next.status.validUntil)}.
+              </p>
+            )}
           </div>
-          <div className="w-full sm:w-auto">
+          <div className="sm:max-w-xs">
             <label htmlFor="gp-demo-person" className="mb-1 block text-xs font-medium text-slate-500">Demo: Person wechseln</label>
-            <select id="gp-demo-person" value={person.id} onChange={(e) => onSelectStaff(e.target.value)} className={ui.input + ' sm:w-56'}>
+            <select id="gp-demo-person" value={person.id} onChange={(e) => onSelectStaff(e.target.value)} className={ui.input}>
               {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
-        </div>
-        <div className="mt-5 border-t border-slate-200 pt-5">
-          <Progress sum={summarize([person], devices)} />
         </div>
       </div>
 
