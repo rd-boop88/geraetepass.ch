@@ -283,6 +283,7 @@ const STATUS = {
   expired: { label: 'Abgelaufen', icon: Alert, chip: 'border-red-200 bg-red-50 text-red-800', bar: 'bg-red-500', stamp: 'border-red-600 text-red-700' },
   missing: { label: 'Schulung fehlt', short: 'Fehlt', icon: EmptySlot, chip: 'border-dashed border-red-300 bg-white text-red-700', bar: 'bg-slate-300', stamp: '' },
 };
+const STATUS_KEYS = ['valid', 'dueSoon', 'expired', 'missing'];
 // Reihenfolge nach Dringlichkeit (für Listen)
 const URGENCY = { expired: 0, missing: 1, dueSoon: 2, valid: 3 };
 
@@ -326,12 +327,6 @@ function summarize(staffList, devices) {
   const ok = counts.valid + counts.dueSoon;
   const pct = total === 0 ? 100 : Math.round((ok / total) * 100);
   return { ...counts, total, ok, pct };
-}
-
-// true, wenn bei der Person etwas bald fällig, abgelaufen oder noch nicht geschult ist
-function hasDue(person, devices) {
-  const sum = summarize([person], devices);
-  return sum.dueSoon + sum.expired + sum.missing > 0;
 }
 
 async function sha256Hex(text) {
@@ -728,7 +723,7 @@ function StatusChip({ status, short }) {
 
 // Fortschrittsbalken: zeigt auf einen Blick, wie viele Schulungen gültig, fällig, abgelaufen oder offen sind.
 function Progress({ sum, label }) {
-  const parts = ['valid', 'dueSoon', 'expired', 'missing'].filter((key) => sum[key] > 0);
+  const parts = STATUS_KEYS.filter((key) => sum[key] > 0);
   const notes = [];
   if (sum.dueSoon) notes.push(sum.dueSoon + ' bald fällig');
   if (sum.expired) notes.push(sum.expired + ' abgelaufen');
@@ -1174,20 +1169,37 @@ function MatrixField({ person, device, readOnly, compact, onOpen }) {
   );
 }
 
-// Erklärt die Symbole der Tabelle
-function Legend() {
+// Legende und Filter in einem: erklärt die Symbole und zeigt auf Klick nur Personen mit diesem Status.
+function StatusFilter({ counts, filter, shown, total, showUnassigned, onToggle, onClear }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200 px-6 py-3 text-sm text-slate-600">
-      {['valid', 'dueSoon', 'expired', 'missing'].map((key) => {
+    <div role="group" aria-label="Nach Status filtern" className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3 text-sm text-slate-600 sm:px-6">
+      {STATUS_KEYS.map((key) => {
         const StatusIcon = STATUS[key].icon;
+        const active = filter.includes(key);
         return (
-          <span key={key} className="inline-flex items-center gap-2">
+          <button
+            key={key}
+            type="button"
+            aria-pressed={active}
+            aria-label={STATUS[key].label + ': ' + counts[key] + (active ? ', Filter aktiv' : '')}
+            onClick={() => onToggle(key)}
+            className={FOCUS + 'inline-flex min-h-[36px] items-center gap-2 rounded-full border py-1 pl-1.5 pr-3 font-medium transition-colors ' + (active ? 'border-[#17324D] bg-slate-100 text-slate-900' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50')}
+          >
             <span className={markCls(key) + ' h-6 w-6'}><StatusIcon className="h-3 w-3" /></span>
             {STATUS[key].label}
-          </span>
+            <span className={active ? 'text-slate-600' : 'text-slate-400'}>{counts[key]}</span>
+          </button>
         );
       })}
-      <span className="inline-flex items-center gap-2"><span className="w-6 text-center text-slate-400">–</span>Nicht zugeteilt</span>
+      {showUnassigned && (
+        <span className="inline-flex items-center gap-2 px-2"><span className="text-slate-400">–</span>Nicht zugeteilt</span>
+      )}
+      {filter.length > 0 && (
+        <span className="inline-flex items-center gap-3 sm:ml-auto">
+          <span className="text-slate-500">{shown} von {plural(total, 'Person', 'Personen')}</span>
+          <button type="button" onClick={onClear} className={ui.link}>Filter aufheben</button>
+        </span>
+      )}
     </div>
   );
 }
@@ -1207,31 +1219,53 @@ function AssignToggle({ person, device, compact, onToggle }) {
   );
 }
 
-// Filter über der Matrix: alle Personen oder nur jene mit fälligen oder offenen Schulungen
-function DueFilter({ onlyDue, onChange, total, due }) {
-  const options = [
-    { id: 'all', label: 'Alle (' + total + ')' },
-    { id: 'due', label: 'Fällig oder offen (' + due + ')' },
-  ];
-  return <Segmented label="Personen filtern" options={options} value={onlyDue ? 'due' : 'all'} onChange={(id) => onChange(id === 'due')} />;
-}
-
 // editMode: Soll-Zuteilung ändern  |  readOnly: QM-Ansicht ohne Bearbeitung
-function Matrix({ staffList, devices, editMode, readOnly, emptyText, onToggleAssign, onOpen }) {
+// filter: gewählte Status (leer = alle Personen)  |  onFilter: neue Auswahl melden
+function Matrix({ staffList: allStaff, devices, editMode, readOnly, filter = [], onFilter, onToggleAssign, onOpen }) {
   const wide = useIsWide();
 
   if (devices.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Im Inventar dieser Abteilung stehen noch keine schulungspflichtigen Geräte.</p>;
   }
+  if (allStaff.length === 0) {
+    return <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Für diese Abteilung sind noch keine Mitarbeitenden erfasst.</p>;
+  }
+
+  // Filter: nur Personen mit mindestens einer Schulung im gewählten Status.
+  // Beim Bearbeiten der Zuteilung sind immer alle Personen sichtbar.
+  const filtering = filter.length > 0 && !editMode;
+  const isMatch = (person, device) => filter.includes(getStatus(device, person.certs[device.id]).key);
+  const staffList = filtering
+    ? allStaff.filter((person) => devices.some((device) => person.assigned.includes(device.id) && isMatch(person, device)))
+    : allStaff;
+  const dimCls = (person, device) => (filtering && !isMatch(person, device) ? ' opacity-30' : '');
+
+  const filterRow = !editMode && onFilter ? (
+    <StatusFilter
+      counts={summarize(allStaff, devices)}
+      filter={filter}
+      shown={staffList.length}
+      total={allStaff.length}
+      showUnassigned={wide}
+      onToggle={(key) => onFilter(filter.includes(key) ? filter.filter((k) => k !== key) : [...filter, key])}
+      onClear={() => onFilter([])}
+    />
+  ) : null;
+
   if (staffList.length === 0) {
-    return <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">{emptyText || 'Für diese Abteilung sind noch keine Mitarbeitenden erfasst.'}</p>;
+    return (
+      <div>
+        {filterRow}
+        <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">In dieser Abteilung hat niemand eine Schulung mit diesem Status.</p>
+      </div>
+    );
   }
 
   /* Breite Bildschirme: Tabelle (Personen in Zeilen, Geräte in Spalten) */
   if (wide) {
     return (
       <div>
-        {!editMode && <Legend />}
+        {filterRow}
         <div className="relative overflow-x-auto">
         <table className="w-full border-collapse text-left text-sm">
           <thead>
@@ -1263,7 +1297,7 @@ function Matrix({ staffList, devices, editMode, readOnly, emptyText, onToggleAss
                   }
                   const status = getStatus(device, person.certs[device.id]);
                   return (
-                    <td key={device.id} className="px-1.5 py-3 text-center">
+                    <td key={device.id} className={'px-1.5 py-3 text-center' + dimCls(person, device)}>
                       <MatrixField person={person} device={device} readOnly={readOnly} compact onOpen={onOpen} />
                       <div className="mt-1 text-xs text-slate-500">{status.validUntil ? formatDate(status.validUntil) : 'offen'}</div>
                     </td>
@@ -1280,6 +1314,8 @@ function Matrix({ staffList, devices, editMode, readOnly, emptyText, onToggleAss
 
   /* Handy und Tablet: eine Karte pro Person, Geräte als Liste */
   return (
+    <div>
+    {filterRow}
     <div className="grid items-start gap-4 p-4 sm:p-6 md:grid-cols-2">
       {staffList.map((person) => {
         const sum = summarize([person], devices);
@@ -1304,7 +1340,7 @@ function Matrix({ staffList, devices, editMode, readOnly, emptyText, onToggleAss
                 {list.map((device) => {
                   const status = getStatus(device, person.certs[device.id]);
                   return (
-                    <li key={device.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                    <li key={device.id} className={'flex items-center justify-between gap-3 px-4 py-3' + (editMode ? '' : dimCls(person, device))}>
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-slate-900">{device.model}</div>
                         <div className="text-xs text-slate-500">{device.category}</div>
@@ -1325,6 +1361,7 @@ function Matrix({ staffList, devices, editMode, readOnly, emptyText, onToggleAss
           </section>
         );
       })}
+    </div>
     </div>
   );
 }
@@ -1882,12 +1919,9 @@ const LINE_TABS = [
 
 function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder }) {
   const [editMode, setEditMode] = useState(false);
-  const [onlyDue, setOnlyDue] = useState(false); // Filter: nur Personen mit fälligen oder offenen Schulungen
+  const [filter, setFilter] = useState([]); // in der Matrix gewählte Status (leer = alle Personen)
   const [showReminder, setShowReminder] = useState(false);
   const trainDevices = deptDevices.filter(needsTraining);
-  const dueStaff = staffList.filter((person) => hasDue(person, deptDevices));
-  // Beim Bearbeiten der Zuteilung sind immer alle Personen sichtbar
-  const shownStaff = onlyDue && !editMode ? dueStaff : staffList;
 
   // Nachweis vorhanden -> Nachweis anzeigen. Noch keiner -> direkt zur Schulung.
   const openField = (person, device, hasRecord) => {
@@ -1931,21 +1965,19 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
               <p className="text-sm text-slate-500">
                 {editMode
                   ? 'Legen Sie fest, wer welches Gerät bedienen muss.'
-                  : 'Status antippen, um den Nachweis zu sehen oder eine fehlende Schulung zu erfassen.'}
+                  : 'Feld antippen für den Nachweis oder eine neue Schulung. Die Status-Knöpfe filtern die Liste.'}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {!editMode && <DueFilter onlyDue={onlyDue} onChange={setOnlyDue} total={staffList.length} due={dueStaff.length} />}
-              <button onClick={() => setEditMode(!editMode)} className={editMode ? ui.btnPrimary : ui.btnSecondary}>
-                {editMode ? <><Check /> Zuteilung fertig</> : <><Pencil /> Zuteilung bearbeiten</>}
-              </button>
-            </div>
+            <button onClick={() => setEditMode(!editMode)} className={editMode ? ui.btnPrimary : ui.btnSecondary}>
+              {editMode ? <><Check /> Zuteilung fertig</> : <><Pencil /> Zuteilung bearbeiten</>}
+            </button>
           </div>
           <Matrix
-            staffList={shownStaff}
+            staffList={staffList}
             devices={trainDevices}
             editMode={editMode}
-            emptyText={onlyDue && staffList.length > 0 ? 'In dieser Abteilung hat niemand fällige oder offene Schulungen.' : ''}
+            filter={filter}
+            onFilter={setFilter}
             onToggleAssign={onToggleAssign}
             onOpen={openField}
           />
@@ -1977,8 +2009,7 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
 /* ---------- 6.12 QM: Klinik-Übersicht (nur lesen) ---------- */
 
 function QmView({ staff, devices, log, onShowCert }) {
-  const [onlyDue, setOnlyDue] = useState(false);
-  const dueCount = staff.filter((person) => hasDue(person, devices)).length;
+  const [filter, setFilter] = useState([]); // gilt für alle Abteilungen gleichzeitig
 
   return (
     <div className="space-y-5">
@@ -1991,9 +2022,6 @@ function QmView({ staff, devices, log, onShowCert }) {
         <div className="mt-5 border-t border-slate-200 pt-5">
           <Progress sum={summarize(staff, devices)} label="Gesamte Klinik" />
         </div>
-        <div className="mt-5 sm:inline-block">
-          <DueFilter onlyDue={onlyDue} onChange={setOnlyDue} total={staff.length} due={dueCount} />
-        </div>
       </div>
 
       {DEPARTMENTS.map((dept) => {
@@ -2003,13 +2031,14 @@ function QmView({ staff, devices, log, onShowCert }) {
           <section key={dept.id} className={ui.panel + ' overflow-hidden'}>
             <div className="border-b border-slate-200 px-4 py-4 sm:px-6">
               <h2 className="text-lg font-semibold text-slate-900">{dept.name}</h2>
-              <p className="mb-4 text-sm text-slate-500">{list.length} Mitarbeitende. Status antippen, um den Nachweis zu sehen.</p>
+              <p className="mb-4 text-sm text-slate-500">{list.length} Mitarbeitende. Feld antippen für den Nachweis. Die Status-Knöpfe filtern alle Abteilungen.</p>
               <Progress sum={summarize(list, deptDevices)} />
             </div>
             <Matrix
-              staffList={onlyDue ? list.filter((person) => hasDue(person, deptDevices)) : list}
+              staffList={list}
               devices={deptDevices.filter(needsTraining)}
-              emptyText={onlyDue && list.length > 0 ? 'In dieser Abteilung hat niemand fällige oder offene Schulungen.' : ''}
+              filter={filter}
+              onFilter={setFilter}
               readOnly
               onOpen={(person, device) => onShowCert(person.id, device.id)}
             />
