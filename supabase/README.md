@@ -43,5 +43,7 @@ createdb gp_test
 supabase/tests/run.sh "postgresql://postgres@localhost:5432/gp_test"
 ```
 
+Das Supabase-Projekt `geraetepass` (Region Zürich, eu-central-2) hat beide Migrationen; die Prüfungen liefen dort am 12.11.2026 ebenfalls ohne Fehler (in einer Transaktion, die danach verworfen wurde).
+
 Jede Änderung an den Zugriffsregeln braucht eine neue Datei unter `migrations/`
 und einen grünen Lauf dieser Prüfungen.

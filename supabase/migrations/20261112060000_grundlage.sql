@@ -253,7 +253,7 @@ for each row execute function app.certificate_before_insert();
 
 -- Nachweise sind unveränderlich, für alle. Eine Korrektur ist ein neuer Nachweis.
 create function app.certificate_no_update() returns trigger
-language plpgsql as $$
+language plpgsql set search_path = '' as $$
 begin
   raise exception 'Schulungsnachweise können nicht geändert werden.';
 end
@@ -343,7 +343,7 @@ referencing new table as neu for each statement execute function app.profiles_ad
 
 -- Erinnerungen: Zeitpunkt der Änderung setzen und protokollieren
 create function app.reminder_before_write() returns trigger
-language plpgsql as $$
+language plpgsql set search_path = '' as $$
 begin
   new.updated_at := now();
   return new;
