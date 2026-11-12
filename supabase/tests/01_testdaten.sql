@@ -21,14 +21,12 @@ insert into public.departments (id, tenant_id, name) values
   (test.d('b1'), test.t('b'), 'Wohngruppe 1');
 
 insert into auth.users (id, email, email_confirmed_at)
-select test.u(k), k || '@example.test', now()
+select test.u(k), 'pin-' || test.u(k) || '@pin.geraetepass.ch', now()
 from unnest(array['a_admin', 'a_qm', 'a_line1', 'a_line2', 'a_emp1', 'a_emp2', 'a_emp3', 'b_admin', 'b_qm', 'b_line', 'b_emp']) k;
 
--- Logins ohne Profil: eine neu eingeladene Person, eine unbestätigte Adresse, eine doppelt erfasste Adresse
+-- Ein Login ohne Person (z.B. Person gelöscht oder Fehler)
 insert into auth.users (id, email, email_confirmed_at) values
-  (test.u('neu'), 'Neu.Person@example.test', now()),
-  (test.u('unbestaetigt'), 'wartet@example.test', null),
-  (test.u('doppelt'), 'doppelt@example.test', now());
+  (test.u('fremd'), 'pin-' || test.u('fremd') || '@pin.geraetepass.ch', now());
 
 insert into public.profiles (id, tenant_id, user_id, name, role, department_id, pers_no, email) values
   (test.p('a_admin'), test.t('a'), test.u('a_admin'), 'Anna Admin', 'admin', null, 'A-001', null),

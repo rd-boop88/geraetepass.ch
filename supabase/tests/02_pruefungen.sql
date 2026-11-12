@@ -98,7 +98,9 @@ begin
 end
 $$;
 
+create table test.pins (profile_id uuid, pin text);
 grant usage on schema test to anon, authenticated, service_role;
+grant insert, select on test.pins to authenticated, service_role;
 grant insert, select on test.results to anon, authenticated, service_role;
 grant usage on sequence test.results_nr_seq to anon, authenticated, service_role;
 grant execute on all functions in schema test to anon, authenticated, service_role;
@@ -115,7 +117,7 @@ select test.sees_nothing('select count(*) from public.certificates', 'Ohne Anmel
 select test.sees_nothing('select count(*) from public.audit_logs', 'Ohne Anmeldung: kein Protokoll sichtbar');
 select test.sees_nothing('select count(*) from public.training_status', 'Ohne Anmeldung: kein Schulungsstand sichtbar');
 select test.blocked(format('insert into public.devices (tenant_id, model) values (%L, %L)', test.t('a'), 'Fremdgerät'), 'Ohne Anmeldung: kein Gerät erfassbar');
-select test.blocked('select public.link_profile()', 'Ohne Anmeldung: Login-Verknüpfung nicht aufrufbar');
+select test.blocked('select public.change_own_pin(''590372'')', 'Ohne Anmeldung: keine PIN setzbar');
 reset role;
 
 
@@ -204,7 +206,7 @@ select test.blocked(format('delete from public.certificates where profile_id = %
 select test.works(format('insert into public.profiles (tenant_id, name, department_id, pers_no) values (%L, %L, %L, %L)', test.t('a'), 'Import Person', test.d('a1'), 'A-099'), 1, 'Leitung: kann Mitarbeitende der eigenen Abteilung erfassen');
 select test.blocked(format('insert into public.profiles (tenant_id, name, department_id, role) values (%L, %L, %L, %L)', test.t('a'), 'Heimliche QM', test.d('a1'), 'qm'), 'Leitung: kann keine Person mit höherer Rolle erfassen');
 select test.blocked(format('insert into public.profiles (tenant_id, name, department_id) values (%L, %L, %L)', test.t('a'), 'Falsche Abteilung', test.d('a2')), 'Leitung: kann niemanden in fremder Abteilung erfassen');
-select test.blocked(format('insert into public.profiles (tenant_id, name, department_id, user_id) values (%L, %L, %L, %L)', test.t('a'), 'Mit Login', test.d('a1'), test.u('neu')), 'Leitung: kann kein Login an eine Person hängen');
+select test.blocked(format('insert into public.profiles (tenant_id, name, department_id, user_id) values (%L, %L, %L, %L)', test.t('a'), 'Mit Login', test.d('a1'), test.u('fremd')), 'Leitung: kann kein Login an eine Person hängen');
 select test.works(format('update public.profiles set job_title = %L where id = %L', 'Dipl. Pflegefachfrau HF', test.p('a_emp1')), 1, 'Leitung: kann Mitarbeitende der eigenen Abteilung bearbeiten');
 select test.blocked(format('update public.profiles set department_id = %L where id = %L', test.d('a2'), test.p('a_emp1')), 'Leitung: kann niemanden in fremde Abteilung verschieben');
 select test.blocked(format('update public.profiles set name = %L where id = %L', 'Gekapert', test.p('a_emp3')), 'Leitung: kann Person fremder Abteilung nicht bearbeiten');
@@ -283,24 +285,16 @@ reset role;
 
 
 -- =====================================================================
--- G. LOGIN MIT PERSON VERKNÜPFEN
+-- G. LOGIN OHNE PERSON, FREMDE KONTEN
 -- =====================================================================
-select test.login('neu');
-select test.count_is('select count(*) from public.profiles', 0, 'Neues Login ohne Verknüpfung: sieht nichts');
-select test.count_is(format('select count(*) where public.link_profile() = %L', test.p('a_neu')), 1, 'Neues Login: wird über die bestätigte E-Mail-Adresse verknüpft');
-select test.count_is('select count(*) from public.profiles', 1, 'Neues Login: sieht danach das eigene Profil');
-select test.no_rows_of('b', 'Neues Login: sieht nichts von der anderen Einrichtung');
+select test.login('fremd');
+select test.count_is('select count(*) from public.profiles', 0, 'Login ohne Person: sieht nichts');
+select test.no_rows_of('a', 'Login ohne Person: sieht nichts von A');
+select test.blocked('select public.change_own_pin(''590372'')', 'Login ohne Person: kann keine PIN setzen');
 reset role;
-
-select test.login('unbestaetigt');
-select test.count_is('select count(*) where public.link_profile() is null', 1, 'Unbestätigte E-Mail-Adresse: wird nicht verknüpft');
-select test.count_is('select count(*) from public.profiles', 0, 'Unbestätigte E-Mail-Adresse: sieht nichts');
-reset role;
-
-select test.login('doppelt');
-select test.blocked('select public.link_profile()', 'Adresse in zwei Einrichtungen: Verknüpfung wird abgelehnt');
-select test.count_is('select count(*) from public.profiles', 0, 'Adresse in zwei Einrichtungen: sieht nichts');
-reset role;
+select test.blocked('insert into auth.users (email) values (''jemand@example.test'')', 'Kein Konto mit eigener E-Mail-Adresse möglich');
+select test.blocked(format('update auth.users set email = %L where id = %L', 'jemand@example.test', test.u('a_emp1')), 'Login-Adresse lässt sich nicht auf eine eigene E-Mail ändern');
+select test.works(format('insert into auth.users (email) values (%L)', 'pin-' || gen_random_uuid() || '@pin.geraetepass.ch'), 1, 'Login der PIN-Anmeldung ist erlaubt');
 
 -- Austritt: Deaktivierte Personen sehen sofort nichts mehr
 update public.profiles set active = false where id = test.p('a_emp2');
@@ -326,55 +320,71 @@ select test.count_is(format('select count(*) from public.certificates where tena
 -- I. ANMELDUNG MIT PERSONALNUMMER UND PIN
 -- =====================================================================
 select test.login('a_line1');
-select test.works(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '482915'), 1, 'Leitung: kann für Mitarbeitende der Abteilung eine PIN festlegen');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp3'), '482915'), 'Leitung: keine PIN für fremde Abteilung');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_qm'), '482915'), 'Leitung: keine PIN für QM');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '123456'), 'Einfache PIN (Folge) wird abgelehnt');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '777777'), 'Einfache PIN (gleiche Ziffern) wird abgelehnt');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '4829'), 'Zu kurze PIN wird abgelehnt');
-select test.count_is('select count(*) from public.pin_status()', 1, 'Leitung: sieht, wer eine PIN hat');
+select test.works(format('insert into test.pins select profile_id, pin from public.issue_pins(array[%L, %L]::uuid[])', test.p('a_emp1'), test.p('a_neu')), 2, 'Leitung: erzeugt Start-PINs für zwei Mitarbeitende');
+select test.count_is('select count(*) from test.pins where pin ~ ''^[0-9]{6}$''', 2, 'Start-PINs haben 6 Ziffern');
+select test.blocked(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_emp3')), 'Leitung: keine Start-PIN für fremde Abteilung');
+select test.blocked(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_qm')), 'Leitung: keine Start-PIN für QM');
+select test.blocked(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_line1')), 'Leitung: eigene PIN nicht als Start-PIN');
+select test.blocked(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_emp2')), 'Leitung: keine Start-PIN für Ausgetretene');
+select test.blocked(format('select * from public.issue_pins(array[%L, %L]::uuid[])', test.p('a_wartet'), test.p('a_emp3')), 'Leitung: gemischte Auswahl wird ganz abgelehnt');
+select test.count_is(format('select count(*) from public.pin_status() where profile_id = %L', test.p('a_wartet')), 0, 'Abgelehnte Auswahl: auch die erlaubte Person erhält keine PIN');
+select test.works(format('insert into public.profiles (tenant_id, name, department_id) values (%L, %L, %L)', test.t('a'), 'Ohne Nummer', test.d('a1')), 1, 'Leitung: erfasst Person ohne Personalnummer');
+select test.blocked('select * from public.issue_pins(array(select id from public.profiles where name = ''Ohne Nummer''))', 'Ohne Personalnummer keine Start-PIN');
+select test.count_is('select count(*) from public.pin_status() where must_change', 2, 'Leitung: sieht, wer die Start-PIN noch ändern muss');
 select test.sees_nothing('select count(*) from app.profile_pins', 'Leitung: kann die gespeicherten PINs nicht lesen');
 select test.blocked(format('select * from public.verify_pin(%L, %L, %L)', 'klinik-nord', 'A-011', '482915'), 'Leitung: kann PINs nicht prüfen lassen');
-select test.blocked(format('select public.create_tenant(%L, %L, %L, %L)', 'Neu', 'neu-klinik', 'X', 'x@example.test'), 'Leitung: kann keine Einrichtung anlegen');
+select test.blocked(format('select * from public.create_tenant(%L, %L, %L, %L)', 'Neu', 'neu-klinik', 'X', 'X-1'), 'Leitung: kann keine Einrichtung anlegen');
 reset role;
 
 select test.login('a_emp1');
-select test.works(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '590372'), 1, 'Mitarbeitende: kann die eigene PIN ändern');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp3'), '590372'), 'Mitarbeitende: keine PIN für andere');
+select test.blocked(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_neu')), 'Mitarbeitende: können keine Start-PINs erzeugen');
+select test.blocked('select public.change_own_pin(''123456'')', 'Einfache PIN (Folge) wird abgelehnt');
+select test.blocked('select public.change_own_pin(''777777'')', 'Einfache PIN (gleiche Ziffern) wird abgelehnt');
+select test.blocked('select public.change_own_pin(''4829'')', 'Zu kurze PIN wird abgelehnt');
+select test.works('select public.change_own_pin(''590372'')', 1, 'Mitarbeitende: legt die eigene PIN fest');
+select test.count_is('select count(*) from public.pin_status() where not must_change', 1, 'Eigene PIN: muss nicht mehr geändert werden');
 select test.count_is('select count(*) from public.pin_status()', 1, 'Mitarbeitende: sieht nur den eigenen PIN-Stand');
 reset role;
 
 select test.login('b_admin');
-select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '590372'), 'Admin B: keine PIN für Person von A');
+select test.blocked(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_emp1')), 'Admin B: keine Start-PIN für Person von A');
 select test.count_is('select count(*) from public.pin_status()', 0, 'Admin B: sieht keine PINs von A');
-select test.blocked(format('select public.create_tenant(%L, %L, %L, %L)', 'Neu', 'neu-klinik', 'X', 'x@example.test'), 'Admin: kann keine Einrichtung anlegen');
+select test.blocked(format('select * from public.create_tenant(%L, %L, %L, %L)', 'Neu', 'neu-klinik', 'X', 'X-1'), 'Admin: kann keine Einrichtung anlegen');
+reset role;
+
+select test.login('a_admin');
+select test.works(format('insert into test.pins select profile_id, pin from public.issue_pins(array[%L]::uuid[])', test.p('a_qm')), 1, 'Admin: erzeugt Start-PIN für QM');
 reset role;
 
 select test.as_service();
-select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L and profile_id = %L and user_id = %L', 'Klinik-Nord ', 'a-011', '590372', 'ok', test.p('a_emp1'), test.u('a_emp1')), 1, 'Richtige PIN: Anmeldung erlaubt (Code und Nummer ohne Rücksicht auf Gross/klein)');
-select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '482915', 'invalid'), 1, 'Alte PIN gilt nicht mehr (Fehlversuch 1 von 5)');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L and profile_id = %L and user_id = %L', 'Klinik-Nord ', 'a-011', '590372', 'ok', test.p('a_emp1'), test.u('a_emp1')), 1, 'Eigene PIN: Anmeldung erlaubt (Code und Nummer ohne Rücksicht auf Gross/klein)');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, (select pin from test.pins where profile_id = %L)) where status = %L and user_id is null', 'klinik-nord', 'A-013', test.p('a_neu'), 'ok'), 1, 'Start-PIN: Anmeldung erlaubt, Login wird danach angelegt');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, (select pin from test.pins where profile_id = %L)) where status = %L', 'klinik-nord', 'A-011', test.p('a_emp1'), 'invalid'), 1, 'Start-PIN gilt nach dem Ändern nicht mehr (Fehlversuch 1 von 5)');
 select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'heim-sued', 'A-011', '590372', 'invalid'), 1, 'Richtige PIN, falsche Einrichtung: abgelehnt');
-select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-012', '590372', 'invalid'), 1, 'Person ohne PIN: abgelehnt');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-014', '590372', 'invalid'), 1, 'Person ohne PIN: abgelehnt');
 select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000001', 'invalid'), 1, 'Fehlversuch 2 von 5');
 select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000002', 'invalid'), 1, 'Fehlversuch 3 von 5');
 select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000003', 'invalid'), 1, 'Fehlversuch 4 von 5');
 select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000004', 'locked'), 1, 'Fünfter Fehlversuch: PIN gesperrt');
 select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '590372', 'locked'), 1, 'Gesperrt: auch die richtige PIN gilt 15 Minuten nicht');
-select test.works(format('select public.create_tenant(%L, %L, %L, %L)', 'Pflegeheim Test', 'heim-test', 'Hanna Heim', 'Hanna@Example.test'), 1, 'Service: kann eine Einrichtung mit Administrator anlegen');
+select test.works(format('insert into test.pins select %L, start_pin from public.create_tenant(%L, %L, %L, %L)', test.p('hanna'), 'Pflegeheim Test', 'heim-test', 'Hanna Heim', 'H-1'), 1, 'Service: legt Einrichtung mit Administrator und Start-PIN an');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, (select pin from test.pins where profile_id = %L)) where status = %L', 'heim-test', 'h-1', test.p('hanna'), 'ok'), 1, 'Neuer Administrator: Start-PIN funktioniert');
 reset role;
 
 select test.login('a_line1');
 select test.count_is(format('select count(*) from public.pin_status() where locked and profile_id = %L', test.p('a_emp1')), 1, 'Leitung: sieht die gesperrte PIN');
-select test.works(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '615204'), 1, 'Leitung: neue PIN hebt die Sperre auf');
+select test.works(format('select * from public.issue_pins(array[%L]::uuid[])', test.p('a_emp1')), 1, 'Leitung: neue Start-PIN hebt die Sperre auf');
+select test.count_is(format('select count(*) from public.pin_status() where locked and profile_id = %L', test.p('a_emp1')), 0, 'Sperre ist aufgehoben');
 select test.count_is(format('select count(*) from public.audit_logs where action = %L', 'PIN nach 5 Fehlversuchen gesperrt: Eva Eins'), 1, 'Protokoll: Sperre festgehalten');
-select test.works(format('select public.set_pin(%L, null)', test.p('a_emp1')), 1, 'Leitung: kann eine PIN entfernen');
-select test.count_is('select count(*) from public.pin_status()', 0, 'Entfernte PIN ist weg');
+select test.count_is(format('select count(*) from public.audit_logs where action = %L', 'Start-PIN ausgegeben: Eva Eins'), 2, 'Protokoll: Start-PINs festgehalten');
 reset role;
 
-insert into auth.users (id, email, email_confirmed_at) values (test.u('hanna'), 'hanna@example.test', now());
+-- Die PIN-Anmeldung legt das Login an und verknüpft es (hier von Hand nachgestellt)
+insert into auth.users (id, email, email_confirmed_at) values (test.u('hanna'), 'pin-' || test.u('hanna') || '@pin.geraetepass.ch', now());
+update public.profiles set user_id = test.u('hanna') where pers_no = 'H-1';
 select test.login('hanna');
-select test.count_is('select count(*) where public.link_profile() is not null', 1, 'Neuer Administrator: wird beim ersten Login verknüpft');
 select test.count_is('select count(*) from public.profiles where role = ''admin''', 1, 'Neuer Administrator: sieht sich als Administrator');
+select test.count_is('select count(*) from public.pin_status() where must_change', 1, 'Neuer Administrator: muss die Start-PIN ändern');
 select test.no_rows_of('a', 'Neue Einrichtung sieht nichts von A');
 select test.works(format('insert into public.departments (tenant_id, name) select id, %L from public.tenants', 'Wohnbereich 1'), 1, 'Neuer Administrator: kann die erste Abteilung anlegen');
 reset role;

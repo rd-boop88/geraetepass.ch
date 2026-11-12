@@ -27,38 +27,47 @@ sieht oder verändert (Row Level Security).
 
 | Rolle | Darf |
 | --- | --- |
-| `employee` | das eigene Profil, die eigenen Zuteilungen und Nachweise lesen, die eigene PIN ändern |
-| `line` | die eigene Abteilung lesen, Personen und Geräte erfassen, zuteilen, Schulungen erfassen, PINs der Mitarbeitenden setzen |
+| `employee` | das eigene Profil, die eigenen Zuteilungen und Nachweise lesen, die eigene PIN festlegen |
+| `line` | die eigene Abteilung lesen, Personen und Geräte erfassen, zuteilen, Schulungen erfassen, Start-PINs für Mitarbeitende erzeugen |
 | `qm` | alles der eigenen Einrichtung lesen, nichts ändern |
-| `admin` | Abteilungen und Personen der eigenen Einrichtung pflegen, Rollen vergeben |
+| `admin` | Abteilungen und Personen der eigenen Einrichtung pflegen, Rollen vergeben, Start-PINs erzeugen |
 
 Niemand kann Nachweise ändern oder löschen, auch der Administrator nicht.
 
 ## Anmeldung
 
-- **E-Mail-Link:** Die Person gibt ihre Adresse ein und erhält einen Link. Beim ersten
-  Login verknüpft `link_profile()` das Login mit der Person, die mit derselben Adresse
-  erfasst ist. Für Adressen ohne Eintrag zeigt die App "Kein Gerätepass gefunden".
-- **Personalnummer und PIN** (Stations-Tablet): Einrichtungscode einmal pro Gerät,
-  dann Personalnummer und PIN. Die Edge Function `functions/pin-login` prüft die PIN
-  über `verify_pin()` (5 Fehlversuche sperren 15 Minuten) und gibt einen einmaligen
-  Anmelde-Schlüssel zurück. Nach 5 Minuten ohne Eingabe meldet die App ab.
+Nur mit Einrichtungscode, Personalnummer und PIN, auf Tablet, Handy und Computer.
+Es gibt keine Anmeldung per E-Mail und es werden keine E-Mails verschickt.
+
+- **Start-PIN:** Stationsleitung oder Administrator erzeugen sie (`issue_pins()`),
+  einzeln oder für alle ohne PIN, und händigen sie aus (Zettel zum Ausdrucken).
+  Die PIN ist nur in diesem Moment sichtbar.
+- **Eigene PIN:** Beim ersten Anmelden legt die Person ihre eigene PIN fest
+  (`change_own_pin()`), vorher geht es nicht weiter.
+- **Prüfung:** Die Edge Function `functions/pin-login` prüft die PIN über `verify_pin()`
+  (5 Fehlversuche sperren 15 Minuten), legt beim ersten Mal das Login an und gibt einen
+  einmaligen Anmelde-Schlüssel zurück. Nach 5 Minuten ohne Eingabe meldet die App ab.
+- **Keine fremden Konten:** Ein Trigger auf `auth.users` lässt nur Logins zu, die die
+  PIN-Anmeldung selbst anlegt. Registrierungen über die Supabase-Schnittstelle scheitern.
+- **PIN vergessen oder gesperrt:** neue Start-PIN erzeugen. **Austritt:** Person
+  deaktivieren, die Anmeldung ist sofort gesperrt.
 
 ## Neue Einrichtung anlegen
 
 Nur mit Service-Zugang (SQL-Editor in Supabase), nicht aus der App:
 
 ```sql
-select public.create_tenant('Spital Muster AG', 'spital-muster', 'Vorname Name', 'admin@spital-muster.ch');
+select * from public.create_tenant('Spital Muster AG', 'spital-muster', 'Vorname Name', 'Personalnummer');
 ```
 
-Die genannte Person meldet sich danach per E-Mail-Link an und ist Administrator.
-Sie legt Abteilungen an, erfasst Stationsleitungen und vergibt Rollen.
+Das Ergebnis enthält die Start-PIN des ersten Administrators. Er meldet sich mit dem
+Einrichtungscode, seiner Personalnummer und dieser PIN an, legt seine eigene PIN fest
+und erfasst danach Abteilungen, Stationsleitungen und Rollen.
 
 ## Prüfen
 
 `tests/run.sh` spielt alles in eine leere PostgreSQL-Datenbank ein und prüft die
-Zugriffsregeln mit zwei Test-Einrichtungen (170 Prüfungen). Nie gegen die echte
+Zugriffsregeln mit zwei Test-Einrichtungen (179 Prüfungen). Nie gegen die echte
 Datenbank laufen lassen, die Prüfungen legen Testdaten an.
 
 ```
@@ -66,9 +75,9 @@ createdb gp_test
 supabase/tests/run.sh "postgresql://postgres@localhost:5432/gp_test"
 ```
 
-Stand 12.11.2026: Alle Migrationen sind im Supabase-Projekt eingespielt. Die Prüfungen
-liefen dort ohne Fehler (in einer Transaktion, die danach verworfen wurde), die
-PIN-Anmeldung wurde mit Wegwerf-Daten gegen das echte Projekt getestet.
+Stand 12.11.2026: Alle Migrationen sind im Supabase-Projekt eingespielt. Die
+PIN-Anmeldung und die Sperre für fremde Konten wurden mit Wegwerf-Daten gegen das
+echte Projekt getestet.
 
 Jede Änderung an den Zugriffsregeln braucht eine neue Datei unter `migrations/`
 und einen grünen Lauf dieser Prüfungen.

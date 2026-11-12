@@ -40,13 +40,12 @@ const LEAD_OPTIONS = [
 const DEFAULT_REMINDER = { email: '', leads: [90, 30], expired: true, missing: true };
 const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i;
 
-// Anmeldung am Stations-Tablet: Der Einrichtungscode bleibt auf dem Gerät gespeichert.
-// Wer sich mit PIN angemeldet hat, wird nach 5 Minuten ohne Eingabe abgemeldet.
+// Anmeldung mit Einrichtungscode, Personalnummer und PIN. Der Einrichtungscode bleibt
+// auf dem Gerät gespeichert. Nach 5 Minuten ohne Eingabe wird abgemeldet (geteilte Tablets).
 const CODE_KEY = 'geraetepass_einrichtung';
 const PIN_SESSION_KEY = 'geraetepass_pin_sitzung';
 const ACTIVITY_KEY = 'geraetepass_aktiv';
 const PIN_IDLE_MS = 5 * 60 * 1000;
-const PIN_PLACEHOLDER_DOMAIN = '@pin.geraetepass.ch';
 
 // Name der Einrichtung und ihre Abteilungen. Beides kommt aus der Datenbank und wird
 // beim Laden gesetzt, bevor die Ansichten gezeichnet werden.
@@ -234,7 +233,7 @@ async function loadData(userId) {
   const tenant = must(tenantRes);
   const logRows = must(logRes);
   const pins = {};
-  must(pinRes).forEach((row) => { pins[row.profile_id] = row.locked ? 'locked' : 'set'; });
+  must(pinRes).forEach((row) => { pins[row.profile_id] = row.locked ? 'locked' : row.must_change ? 'initial' : 'set'; });
 
   const deptsOfDevice = {};
   deptDevices.forEach((row) => { (deptsOfDevice[row.device_id] = deptsOfDevice[row.device_id] || []).push(row.department_id); });
@@ -322,20 +321,6 @@ const store = {
   set: (key, value) => { try { window.localStorage.setItem(key, value); } catch (e) { /* ohne Speicher */ } },
   remove: (key) => { try { window.localStorage.removeItem(key); } catch (e) { /* ohne Speicher */ } },
 };
-
-// Kommt jemand über einen abgelaufenen Anmelde-Link, steht der Fehler in der Adresse.
-function readUrlNotice() {
-  const hash = window.location.hash.replace(/^#/, '');
-  const search = window.location.search.replace(/^\?/, '');
-  const params = new URLSearchParams(hash.includes('error') ? hash : search);
-  if (!params.get('error') && !params.get('error_code')) return '';
-  window.history.replaceState(null, '', window.location.pathname);
-  if (params.get('error_code') === 'otp_expired') return 'Der Anmelde-Link ist abgelaufen oder wurde schon benutzt. Bitte einen neuen Link anfordern.';
-  return 'Die Anmeldung über den Link hat nicht geklappt. Bitte einen neuen Link anfordern.';
-}
-
-// Beim Laden der Seite einmal lesen, bevor die Anmeldung die Adresse auswertet
-const URL_NOTICE = typeof window !== 'undefined' ? readUrlNotice() : '';
 
 /* ==========================================================================
    4b. HILFSFUNKTIONEN (Status, Quote, Passwort, Bildschirmbreite)
@@ -949,46 +934,16 @@ function SignaturePad({ name, onChange }) {
 
 /* ---------- 6.1 Anmeldung ---------- */
 
-const LOGIN_MODES = [
-  { id: 'pin', label: 'Personalnummer' },
-  { id: 'email', label: 'E-Mail' },
-];
-
-function LoginScreen({ notice }) {
+function LoginScreen() {
   const savedCode = store.get(CODE_KEY) || '';
-  const [mode, setMode] = useState(savedCode ? 'pin' : 'email');
-  const [email, setEmail] = useState('');
-  const [sentTo, setSentTo] = useState('');
   const [code, setCode] = useState(savedCode);
   const [editCode, setEditCode] = useState(!savedCode);
   const [persNo, setPersNo] = useState('');
   const [pin, setPin] = useState('');
-  const [error, setError] = useState(notice || '');
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const switchMode = (next) => { setMode(next); setError(''); };
-
-  const sendLink = async (e) => {
-    e.preventDefault();
-    const address = email.trim();
-    if (!EMAIL_PATTERN.test(address)) { setError('Bitte eine gültige E-Mail-Adresse eingeben.'); return; }
-    setBusy(true);
-    setError('');
-    const { error: err } = await supabase.auth.signInWithOtp({
-      email: address,
-      options: { emailRedirectTo: window.location.origin + window.location.pathname },
-    });
-    setBusy(false);
-    if (err) {
-      setError(err.status === 429
-        ? 'Es wurden kurz hintereinander zu viele Links angefordert. Bitte in einigen Minuten erneut versuchen.'
-        : 'Der Link konnte nicht verschickt werden. Bitte später erneut versuchen.');
-      return;
-    }
-    setSentTo(address);
-  };
-
-  const pinLogin = async (e) => {
+  const login = async (e) => {
     e.preventDefault();
     const cleanCode = code.trim().toLowerCase();
     if (!cleanCode || !persNo.trim() || !/^[0-9]{6,8}$/.test(pin)) {
@@ -1027,60 +982,88 @@ function LoginScreen({ notice }) {
         <Logo size="lg" />
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Anmelden</h1>
-          <p className="mt-1 text-sm text-slate-500">Am Stations-Tablet mit Personalnummer und PIN, sonst mit einem Link per E-Mail.</p>
+          <p className="mt-1 text-sm text-slate-500">Mit Personalnummer und PIN. Die erste PIN erhalten Sie von Ihrer Stationsleitung.</p>
         </div>
 
-        <Segmented label="Anmeldung mit" options={LOGIN_MODES} value={mode} onChange={switchMode} />
-
-        {mode === 'pin' && (
-          <form onSubmit={pinLogin} className="space-y-4">
-            {editCode ? (
-              <div>
-                <label htmlFor="gp-code" className={ui.label}>Einrichtungscode</label>
-                <input id="gp-code" type="text" autoCapitalize="none" autoComplete="organization" spellCheck="false" value={code} onChange={(e) => { setCode(e.target.value); setError(''); }} className={ui.input} />
-                <p className="mt-1.5 text-xs text-slate-500">Einmal pro Gerät. Den Code kennt die Stationsleitung.</p>
-              </div>
-            ) : (
-              <p className="flex flex-wrap items-baseline justify-between gap-2 text-sm text-slate-600">
-                <span>Einrichtung: <span className="font-semibold text-slate-900">{code}</span></span>
-                <button type="button" onClick={() => setEditCode(true)} className={ui.link}>Ändern</button>
-              </p>
-            )}
+        <form onSubmit={login} className="space-y-4">
+          {editCode ? (
             <div>
-              <label htmlFor="gp-persno" className={ui.label}>Personalnummer</label>
-              <input id="gp-persno" type="text" autoCapitalize="characters" autoComplete="username" spellCheck="false" value={persNo} onChange={(e) => { setPersNo(e.target.value); setError(''); }} className={ui.input} />
+              <label htmlFor="gp-code" className={ui.label}>Einrichtungscode</label>
+              <input id="gp-code" type="text" autoCapitalize="none" autoComplete="organization" spellCheck="false" value={code} onChange={(e) => { setCode(e.target.value); setError(''); }} className={ui.input} />
+              <p className="mt-1.5 text-xs text-slate-500">Einmal pro Gerät. Den Code kennt die Stationsleitung.</p>
             </div>
-            <div>
-              <label htmlFor="gp-pin" className={ui.label}>PIN</label>
-              <input id="gp-pin" type="password" inputMode="numeric" autoComplete="current-password" maxLength={8} value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }} className={ui.input} />
-            </div>
-            {error && <p role="alert" className="text-sm font-medium text-red-700">{error}</p>}
-            <button type="submit" disabled={busy} className={ui.btnPrimary + ' w-full'}>
-              <Lock /> {busy ? 'Wird geprüft …' : 'Anmelden'}
-            </button>
-          </form>
-        )}
-
-        {mode === 'email' && (sentTo ? (
-          <div className="space-y-3 text-sm text-slate-600">
-            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 font-medium text-emerald-900">
-              Der Anmelde-Link ist unterwegs an {sentTo}.
+          ) : (
+            <p className="flex flex-wrap items-baseline justify-between gap-2 text-sm text-slate-600">
+              <span>Einrichtung: <span className="font-semibold text-slate-900">{code}</span></span>
+              <button type="button" onClick={() => setEditCode(true)} className={ui.link}>Ändern</button>
             </p>
-            <p>Öffnen Sie die E-Mail und tippen Sie auf den Link. Keine E-Mail erhalten? Bitte auch den Spam-Ordner prüfen.</p>
-            <button type="button" onClick={() => { setSentTo(''); setError(''); }} className={ui.link}>Andere Adresse eingeben</button>
+          )}
+          <div>
+            <label htmlFor="gp-persno" className={ui.label}>Personalnummer</label>
+            <input id="gp-persno" type="text" autoCapitalize="characters" autoComplete="username" spellCheck="false" value={persNo} onChange={(e) => { setPersNo(e.target.value); setError(''); }} className={ui.input} />
           </div>
-        ) : (
-          <form onSubmit={sendLink} className="space-y-4">
-            <div>
-              <label htmlFor="gp-email" className={ui.label}>E-Mail-Adresse</label>
-              <input id="gp-email" type="email" autoComplete="email" value={email} onChange={(e) => { setEmail(e.target.value); setError(''); }} className={ui.input} />
-            </div>
-            {error && <p role="alert" className="text-sm font-medium text-red-700">{error}</p>}
-            <button type="submit" disabled={busy} className={ui.btnPrimary + ' w-full'}>
-              <Mail /> {busy ? 'Wird verschickt …' : 'Anmelde-Link senden'}
-            </button>
-          </form>
-        ))}
+          <div>
+            <label htmlFor="gp-pin" className={ui.label}>PIN</label>
+            <input id="gp-pin" type="password" inputMode="numeric" autoComplete="current-password" maxLength={8} value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }} className={ui.input} />
+          </div>
+          {error && <p role="alert" className="text-sm font-medium text-red-700">{error}</p>}
+          <button type="submit" disabled={busy} className={ui.btnPrimary + ' w-full'}>
+            <Lock /> {busy ? 'Wird geprüft …' : 'Anmelden'}
+          </button>
+          <p className="text-xs text-slate-500">PIN vergessen? Die Stationsleitung erzeugt eine neue Start-PIN.</p>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Eigene PIN festlegen: beim ersten Anmelden Pflicht, später unter «Mein Gerätepass»
+function OwnPinForm({ onSave, submitLabel }) {
+  const [pin, setPin] = useState('');
+  const [repeat, setRepeat] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!/^[0-9]{6,8}$/.test(pin)) { setError('Die PIN besteht aus 6 bis 8 Ziffern.'); return; }
+    if (pin !== repeat) { setError('Die beiden Eingaben stimmen nicht überein.'); return; }
+    setBusy(true);
+    const err = await onSave(pin);
+    setBusy(false);
+    if (err) { setError(err); setPin(''); setRepeat(''); }
+  };
+
+  const digits = (setter) => (e) => { setter(e.target.value.replace(/\D/g, '')); setError(''); };
+
+  return (
+    <form onSubmit={save} className="space-y-4">
+      <div>
+        <label htmlFor="gp-new-pin" className={ui.label}>Neue PIN</label>
+        <input id="gp-new-pin" type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={pin} onChange={digits(setPin)} className={ui.input} />
+        <p className="mt-1.5 text-xs text-slate-500">6 bis 8 Ziffern, keine Folgen wie 123456 oder 111111.</p>
+      </div>
+      <div>
+        <label htmlFor="gp-new-pin2" className={ui.label}>Neue PIN wiederholen</label>
+        <input id="gp-new-pin2" type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={repeat} onChange={digits(setRepeat)} className={ui.input} />
+      </div>
+      {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800">{error}</p>}
+      <button type="submit" disabled={busy} className={ui.btnPrimary + ' w-full'}>{busy ? 'Wird gespeichert …' : submitLabel}</button>
+    </form>
+  );
+}
+
+function FirstPinScreen({ me, onSave, onLogout }) {
+  return (
+    <div lang="de" className="flex min-h-screen items-center justify-center bg-slate-100 p-4 text-slate-800">
+      <div className={ui.panel + ' w-full max-w-sm space-y-6 p-6 sm:p-8'}>
+        <Logo size="lg" />
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900">Willkommen, {me.name}</h1>
+          <p className="mt-1 text-sm text-slate-500">Bitte legen Sie jetzt Ihre eigene PIN fest. Die Start-PIN gilt danach nicht mehr.</p>
+        </div>
+        <OwnPinForm onSave={onSave} submitLabel="PIN festlegen und weiter" />
+        <button type="button" onClick={onLogout} className={ui.link}>Abmelden</button>
       </div>
     </div>
   );
@@ -1095,27 +1078,16 @@ function LoadingScreen() {
   );
 }
 
-// Angemeldet, aber keiner Person zugeordnet (oder Fehler beim Laden)
-function NoAccess({ email, message, onRetry, onLogout }) {
-  const realEmail = email && !email.endsWith(PIN_PLACEHOLDER_DOMAIN) ? email : '';
+// Angemeldet, aber keine aktive Person dazu (oder Fehler beim Laden)
+function NoAccess({ message, onRetry, onLogout }) {
   return (
     <div lang="de" className="flex min-h-screen items-center justify-center bg-slate-100 p-4 text-slate-800">
       <div className={ui.panel + ' w-full max-w-md space-y-5 p-6 sm:p-8'}>
         <Logo size="lg" />
-        {message ? (
-          <>
-            <h1 className="text-xl font-semibold text-slate-900">Laden nicht möglich</h1>
-            <p className="text-sm text-slate-600">{message}</p>
-          </>
-        ) : (
-          <>
-            <h1 className="text-xl font-semibold text-slate-900">Kein Gerätepass gefunden</h1>
-            <p className="text-sm text-slate-600">
-              {realEmail ? 'Zur Adresse ' + realEmail + ' ist in keiner Einrichtung ein Gerätepass erfasst. ' : ''}
-              Bitte melden Sie sich bei Ihrer Stationsleitung oder beim Administrator, damit Ihre E-Mail-Adresse eingetragen wird.
-            </p>
-          </>
-        )}
+        <h1 className="text-xl font-semibold text-slate-900">{message ? 'Laden nicht möglich' : 'Kein Gerätepass gefunden'}</h1>
+        <p className="text-sm text-slate-600">
+          {message || 'Zu dieser Anmeldung ist keine aktive Person erfasst. Bitte melden Sie sich bei Ihrer Stationsleitung.'}
+        </p>
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           {onRetry && <button type="button" onClick={onRetry} className={ui.btnPrimary + ' sm:flex-1'}>Erneut versuchen</button>}
           <button type="button" onClick={onLogout} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}><Lock /> Abmelden</button>
@@ -1284,12 +1256,8 @@ function EmployeeView({ person, devices, onShowCert, onOwnPin }) {
             )}
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-sm text-slate-600">
-            <span>
-              Stations-Tablet: {person.persNo ? (person.pin === 'set' ? 'PIN festgelegt' : person.pin === 'locked' ? 'PIN gesperrt' : 'noch keine PIN') : 'keine Personalnummer erfasst'}
-            </span>
-            {person.persNo && (
-              <button type="button" onClick={onOwnPin} className={ui.btnSecondary}><Lock /> {person.pin ? 'PIN ändern' : 'PIN festlegen'}</button>
-            )}
+            <span>Anmeldung mit Personal-Nr. {person.persNo}</span>
+            <button type="button" onClick={onOwnPin} className={ui.btnSecondary}><Lock /> PIN ändern</button>
           </div>
         </div>
       </div>
@@ -1850,9 +1818,11 @@ function InventoryTab({ deptId, devices, allDevices, onImport }) {
 
 /* ---------- 6.9 Stationsleitung: Team ---------- */
 
-function TeamTab({ deptId, staffList, allStaff, devices, canEditPerson, onImport, onEditPerson, onNewPerson }) {
+function TeamTab({ deptId, staffList, allStaff, devices, canEditPerson, onImport, onEditPerson, onNewPerson, onIssuePins }) {
   const [draft, setDraft] = useState(null);
   const [error, setError] = useState('');
+  // Wer noch keine PIN hat und eine bekommen kann
+  const withoutPin = staffList.filter((p) => !p.pin && p.persNo && canEditPerson(p));
 
   const handleFile = async (file) => {
     setError('');
@@ -1898,7 +1868,14 @@ function TeamTab({ deptId, staffList, allStaff, devices, canEditPerson, onImport
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Team der Station</h2>
           <p className="text-sm text-slate-500">{plural(staffList.length, 'Person', 'Personen')}</p>
-          <button type="button" onClick={onNewPerson} className={ui.link + ' mt-1 min-h-[32px]'}>Person einzeln erfassen</button>
+          <div className="mt-1 flex flex-wrap gap-x-5">
+            <button type="button" onClick={onNewPerson} className={ui.link + ' min-h-[32px]'}>Person einzeln erfassen</button>
+            {withoutPin.length > 0 && (
+              <button type="button" onClick={() => onIssuePins(withoutPin.map((p) => p.id))} className={ui.link + ' min-h-[32px]'}>
+                Start-PINs für {plural(withoutPin.length, 'Person', 'Personen')} ohne PIN erzeugen
+              </button>
+            )}
+          </div>
         </div>
       </ImportBar>
 
@@ -1917,9 +1894,8 @@ function TeamTab({ deptId, staffList, allStaff, devices, canEditPerson, onImport
                 <div className="text-slate-600 md:w-56 md:text-right">
                   {sum.total === 0 ? 'Noch keine Geräte zugeteilt' : sum.ok + ' von ' + sum.total + ' Schulungen gültig'}
                 </div>
-                <div className="flex flex-wrap items-center gap-1.5 md:w-40 md:justify-end">
-                  <LoginBadge on={!!person.email} label="E-Mail" />
-                  <LoginBadge on={!!person.pin} warn={person.pin === 'locked'} label={person.pin === 'locked' ? 'PIN gesperrt' : 'PIN'} />
+                <div className="flex flex-wrap items-center gap-1.5 md:w-36 md:justify-end">
+                  <PinBadge pin={person.pin} />
                 </div>
                 {canEditPerson(person) ? (
                   <button type="button" onClick={() => onEditPerson(person)} aria-label={person.name + ' bearbeiten'} className={ui.btnSecondary + ' mt-2 md:mt-0 md:w-32'}><Pencil /> Bearbeiten</button>
@@ -2129,7 +2105,7 @@ const LINE_TABS = [
   { id: 'team', label: 'Team' },
 ];
 
-function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDevices, defaultInstructor, canEditPerson, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder, onEditPerson, onNewPerson }) {
+function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDevices, defaultInstructor, canEditPerson, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder, onEditPerson, onNewPerson, onIssuePins }) {
   const [editMode, setEditMode] = useState(false);
   const [filter, setFilter] = useState([]); // in der Matrix gewählte Status (leer = alle Personen)
   const [showReminder, setShowReminder] = useState(false);
@@ -2206,7 +2182,7 @@ function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDe
 
       {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} />}
 
-      {tab === 'team' && <TeamTab deptId={deptId} staffList={staffList} allStaff={allStaff} devices={deptDevices} canEditPerson={canEditPerson} onImport={onImportStaff} onEditPerson={onEditPerson} onNewPerson={onNewPerson} />}
+      {tab === 'team' && <TeamTab deptId={deptId} staffList={staffList} allStaff={allStaff} devices={deptDevices} canEditPerson={canEditPerson} onImport={onImportStaff} onEditPerson={onEditPerson} onNewPerson={onNewPerson} onIssuePins={onIssuePins} />}
 
       {showReminder && (
         <ReminderModal
@@ -2387,71 +2363,31 @@ function CertificateModal({ person, device, loadSignature, onClose, onRetrain })
 }
 
 
-/* ---------- 6.14 Personen bearbeiten und PIN festlegen ---------- */
+/* ---------- 6.14 Personen bearbeiten und Start-PINs ---------- */
 
-// PIN für die Anmeldung am Stations-Tablet festlegen, ändern oder entfernen
-function PinSection({ person, self, onSetPin }) {
-  const [pin, setPin] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+const PIN_TEXT = {
+  set: 'Eigene PIN aktiv.',
+  initial: 'Start-PIN ausgegeben, noch nicht durch eine eigene PIN ersetzt.',
+  locked: 'PIN gesperrt nach 5 Fehlversuchen. Eine neue Start-PIN hebt die Sperre auf.',
+};
 
-  if (!person.persNo) {
-    return <p className="text-sm text-slate-500">Für die Anmeldung mit PIN braucht es zuerst eine Personalnummer.</p>;
-  }
-
-  const save = async (value) => {
-    if (value !== null && !/^[0-9]{6,8}$/.test(value)) { setError('Die PIN besteht aus 6 bis 8 Ziffern.'); return; }
-    setBusy(true);
-    setError('');
-    const err = await onSetPin(person.id, value);
-    setBusy(false);
-    if (err) setError(err);
-    else setPin('');
-  };
-
-  let state = 'Noch keine PIN festgelegt.';
-  if (person.pin === 'set') state = 'PIN ist festgelegt.';
-  if (person.pin === 'locked') state = 'PIN gesperrt nach 5 Fehlversuchen. Eine neue PIN hebt die Sperre auf.';
-
-  return (
-    <div>
-      <p className="text-sm text-slate-600">
-        {state} Anmeldung am Tablet mit Personalnummer <span className="font-semibold text-slate-900">{person.persNo}</span>.
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <input
-          type="password"
-          inputMode="numeric"
-          autoComplete="new-password"
-          maxLength={8}
-          aria-label={self ? 'Neue PIN' : 'Neue PIN für ' + person.name}
-          placeholder="Neue PIN"
-          value={pin}
-          onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-          className={ui.input.replace('w-full ', 'w-40 ')}
-        />
-        <button type="button" disabled={busy || pin.length < 6} onClick={() => save(pin)} className={ui.btnSecondary + ' disabled:opacity-50'}>
-          PIN speichern
-        </button>
-        {person.pin && (
-          <button type="button" disabled={busy} onClick={() => save(null)} className={ui.link}>PIN entfernen</button>
-        )}
-      </div>
-      <p className="mt-1.5 text-xs text-slate-500">6 bis 8 Ziffern, keine Folgen wie 123456 oder 111111.</p>
-      {error && <p role="alert" className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-800">{error}</p>}
-    </div>
-  );
+function PinBadge({ pin }) {
+  const look = {
+    set: ['border-emerald-200 bg-emerald-50 text-emerald-800', 'PIN aktiv'],
+    initial: ['border-sky-200 bg-sky-50 text-sky-900', 'Start-PIN offen'],
+    locked: ['border-amber-300 bg-amber-50 text-amber-900', 'PIN gesperrt'],
+  }[pin] || ['border-slate-200 bg-white text-slate-500', 'Keine PIN'];
+  return <span className={'rounded-full border px-2.5 py-0.5 text-xs font-semibold ' + look[0]}>{look[1]}</span>;
 }
 
 // Person erfassen oder bearbeiten.
 // mode 'admin': alle Angaben inkl. Abteilung und Rolle. mode 'line': Mitarbeitende der eigenen Abteilung.
-function PersonModal({ person, mode, deptId, departments, onSave, onSetPin, onClose }) {
+function PersonModal({ person, mode, deptId, departments, onSave, onIssuePin, onClose }) {
   const isNew = !person;
   const [form, setForm] = useState({
     name: person ? person.name : '',
     jobTitle: person ? person.role : '',
     persNo: person ? person.persNo : '',
-    email: person ? person.email : '',
     dept: person ? (person.dept || '') : (deptId || ''),
     appRole: person ? person.appRole : 'employee',
     active: person ? person.active : true,
@@ -2463,7 +2399,7 @@ function PersonModal({ person, mode, deptId, departments, onSave, onSetPin, onCl
   const save = async (e) => {
     e.preventDefault();
     if (!form.name.trim()) { setError('Bitte den Namen eingeben.'); return; }
-    if (form.email.trim() && !EMAIL_PATTERN.test(form.email.trim())) { setError('Bitte eine gültige E-Mail-Adresse eingeben.'); return; }
+    if (!form.persNo.trim()) { setError('Bitte die Personalnummer eingeben. Mit ihr meldet sich die Person an.'); return; }
     if (mode === 'admin' && form.appRole === 'line' && !form.dept) { setError('Eine Stationsleitung braucht eine Abteilung.'); return; }
     setBusy(true);
     const err = await onSave(person, form);
@@ -2472,12 +2408,21 @@ function PersonModal({ person, mode, deptId, departments, onSave, onSetPin, onCl
     else onClose();
   };
 
+  const issue = async () => {
+    setBusy(true);
+    const err = await onIssuePin([person.id]);
+    setBusy(false);
+    if (err) setError(err);
+  };
+
   const field = (id, label, key, props = {}) => (
     <div>
       <label htmlFor={id} className={ui.label}>{label}</label>
       <input id={id} value={form[key]} onChange={(e) => change({ [key]: e.target.value })} className={ui.input} {...props} />
     </div>
   );
+
+  const unsaved = person && form.persNo.trim() !== person.persNo;
 
   return (
     <Modal label={isNew ? 'Person erfassen' : 'Person bearbeiten'} onClose={onClose}>
@@ -2492,7 +2437,6 @@ function PersonModal({ person, mode, deptId, departments, onSave, onSetPin, onCl
           {field('gp-p-job', 'Funktion', 'jobTitle', { autoComplete: 'off' })}
           {field('gp-p-persno', 'Personalnummer', 'persNo', { autoComplete: 'off', spellCheck: 'false' })}
         </div>
-        {field('gp-p-email', 'E-Mail für den Anmelde-Link', 'email', { type: 'email', autoComplete: 'off' })}
 
         {mode === 'admin' && (
           <div className="grid gap-4 sm:grid-cols-2">
@@ -2529,21 +2473,66 @@ function PersonModal({ person, mode, deptId, departments, onSave, onSetPin, onCl
 
       {!isNew && person.active && (
         <div className="mt-6 border-t border-slate-200 pt-5">
-          <h3 className="mb-2 text-sm font-semibold text-slate-900">Anmeldung am Stations-Tablet</h3>
-          <PinSection person={person} onSetPin={onSetPin} />
+          <h3 className="mb-1 text-sm font-semibold text-slate-900">Anmeldung</h3>
+          <p className="text-sm text-slate-600">{PIN_TEXT[person.pin] || 'Noch keine PIN.'}</p>
+          {person.persNo ? (
+            <button type="button" disabled={busy || unsaved} onClick={issue} className={ui.btnSecondary + ' mt-3 disabled:opacity-50'}>
+              <Lock /> {person.pin ? 'Neue Start-PIN erzeugen' : 'Start-PIN erzeugen'}
+            </button>
+          ) : (
+            <p className="mt-2 text-sm text-slate-500">Zuerst die Personalnummer speichern.</p>
+          )}
+          {unsaved && <p className="mt-2 text-xs text-slate-500">Bitte zuerst die geänderte Personalnummer speichern.</p>}
         </div>
       )}
     </Modal>
   );
 }
 
-function OwnPinModal({ person, onSetPin, onClose }) {
+// Erzeugte Start-PINs: einmalig sichtbar, als Zettel zum Ausschneiden druckbar
+function PinListModal({ list, code, onClose }) {
+  useEffect(() => {
+    document.documentElement.classList.add('gp-cert-open');
+    return () => document.documentElement.classList.remove('gp-cert-open');
+  }, []);
+  return (
+    <Modal label="Start-PINs" onClose={onClose}>
+      <div className="gp-no-print">
+        <h2 className="text-xl font-semibold tracking-tight text-slate-900">
+          {list.length === 1 ? 'Start-PIN für ' + list[0].name : plural(list.length, 'Start-PIN', 'Start-PINs') + ' erzeugt'}
+        </h2>
+        <p className="mt-1 text-sm text-slate-600">
+          Nur jetzt sichtbar. Bitte {list.length === 1 ? 'der Person' : 'den Personen'} persönlich aushändigen oder ausdrucken.
+          Beim ersten Anmelden legt jede Person ihre eigene PIN fest.
+        </p>
+      </div>
+      <ul className="mt-5 grid gap-3 sm:grid-cols-2 print:grid-cols-2">
+        {list.map((row) => (
+          <li key={row.profile_id} className="break-inside-avoid rounded-xl border border-dashed border-slate-400 p-4 text-sm">
+            <div className="font-semibold text-slate-900">{row.name}</div>
+            <dl className="mt-2 grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-slate-600">
+              <dt>Einrichtung</dt><dd className="font-medium text-slate-900">{code}</dd>
+              <dt>Personal-Nr.</dt><dd className="font-medium text-slate-900">{row.pers_no}</dd>
+              <dt>Start-PIN</dt><dd className="font-mono text-lg font-bold tracking-widest text-slate-900">{row.pin}</dd>
+            </dl>
+            <p className="mt-2 text-xs text-slate-500">geraetepass.ch: beim ersten Anmelden eigene PIN festlegen.</p>
+          </li>
+        ))}
+      </ul>
+      <div className="gp-no-print mt-6 flex flex-col gap-2 sm:flex-row-reverse">
+        <button type="button" onClick={() => window.print()} className={ui.btnPrimary + ' sm:flex-1'}><Printer /> Drucken</button>
+        <button type="button" onClick={onClose} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}>Schliessen</button>
+      </div>
+    </Modal>
+  );
+}
+
+function OwnPinModal({ onSave, onClose }) {
   return (
     <Modal label="Meine PIN" onClose={onClose}>
-      <h2 className="text-xl font-semibold tracking-tight text-slate-900">Meine PIN</h2>
-      <p className="mb-4 text-sm text-slate-500">Für die Anmeldung am Stations-Tablet mit Personalnummer und PIN.</p>
-      <PinSection person={person} self onSetPin={onSetPin} />
-      <button type="button" onClick={onClose} className={ui.btnSecondary + ' mt-6 min-h-[44px] w-full'}>Schliessen</button>
+      <h2 className="text-xl font-semibold tracking-tight text-slate-900">Meine PIN ändern</h2>
+      <p className="mb-4 text-sm text-slate-500">Für die Anmeldung mit Personalnummer und PIN.</p>
+      <OwnPinForm onSave={async (pin) => { const err = await onSave(pin); if (!err) onClose(); return err; }} submitLabel="PIN speichern" />
     </Modal>
   );
 }
@@ -2565,7 +2554,7 @@ function AdminView({ tenant, departments, people, onAddDept, onEditPerson, onNew
 
   const q = plain(query);
   const list = people
-    .filter((p) => !q || plain(p.name + ' ' + p.persNo + ' ' + p.email).includes(q))
+    .filter((p) => !q || plain(p.name + ' ' + p.persNo).includes(q))
     .sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
 
   return (
@@ -2575,7 +2564,7 @@ function AdminView({ tenant, departments, people, onAddDept, onEditPerson, onNew
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{tenant.name}</h1>
         <p className="mt-3 max-w-2xl text-sm text-slate-600">
           Einrichtungscode für die Stations-Tablets: <span className="rounded bg-slate-100 px-2 py-0.5 font-mono font-semibold text-slate-900">{tenant.code}</span>.
-          Er wird auf jedem Tablet einmal eingegeben; danach melden sich Mitarbeitende mit Personalnummer und PIN an.
+          Er wird auf jedem Gerät einmal eingegeben; danach melden sich alle mit Personalnummer und PIN an.
         </p>
       </div>
 
@@ -2615,7 +2604,7 @@ function AdminView({ tenant, departments, people, onAddDept, onEditPerson, onNew
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-6">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">Personen und Rollen</h2>
-            <p className="text-sm text-slate-500">Wer sich mit E-Mail anmeldet, braucht hier seine Adresse. Für das Tablet: Personalnummer und PIN.</p>
+            <p className="text-sm text-slate-500">Angemeldet wird mit Personalnummer und PIN. Die Start-PIN erzeugen Sie unter «Bearbeiten».</p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <label htmlFor="gp-search" className="sr-only">Person suchen</label>
@@ -2633,9 +2622,8 @@ function AdminView({ tenant, departments, people, onAddDept, onEditPerson, onNew
                   <div className="font-semibold text-slate-900">{p.name}{!p.active && <span className="font-normal text-slate-500"> (ausgetreten)</span>}</div>
                   <div className="text-slate-500">{parts(ROLE_LABELS[p.appRole], p.dept ? deptShort(p.dept) : '', p.persNo && 'Personal-Nr. ' + p.persNo)}</div>
                 </div>
-                <div className="flex flex-wrap gap-1.5 md:w-64">
-                  <LoginBadge on={!!p.email} label="E-Mail" />
-                  <LoginBadge on={!!p.pin} warn={p.pin === 'locked'} label={p.pin === 'locked' ? 'PIN gesperrt' : 'PIN'} />
+                <div className="flex flex-wrap gap-1.5 md:w-40">
+                  <PinBadge pin={p.active ? p.pin : null} />
                 </div>
                 <button type="button" onClick={() => onEditPerson(p)} className={ui.btnSecondary + ' md:w-32'}><Pencil /> Bearbeiten</button>
               </li>
@@ -2647,11 +2635,6 @@ function AdminView({ tenant, departments, people, onAddDept, onEditPerson, onNew
   );
 }
 
-function LoginBadge({ on, warn, label }) {
-  let cls = 'border-slate-200 bg-white text-slate-400 line-through';
-  if (on) cls = warn ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-800';
-  return <span className={'rounded-full border px-2.5 py-0.5 text-xs font-semibold ' + cls}>{label}</span>;
-}
 
 
 /* ==========================================================================
@@ -2675,6 +2658,7 @@ export default function App() {
   const [certView, setCertView] = useState(null);
   const [personEdit, setPersonEdit] = useState(null); // { person, mode }
   const [ownPin, setOwnPin] = useState(false);
+  const [pinList, setPinList] = useState(null);
   const [toast, setToast] = useState(null);
 
   const userId = session ? session.user.id : null;
@@ -2719,19 +2703,18 @@ export default function App() {
     setCertView(null);
     setPersonEdit(null);
     setOwnPin(false);
+    setPinList(null);
     await supabase.auth.signOut();
     setSession(null);
   }, []);
 
-  // Nach der Anmeldung: Login mit der Person verknüpfen und alles laden
+  // Nach der Anmeldung alles laden. Die PIN-Anmeldung hat das Login bereits mit der Person verknüpft.
   useEffect(() => {
     if (!userId) { setData(null); setAccess({ status: 'idle' }); return undefined; }
     let cancelled = false;
     (async () => {
       setAccess({ status: 'checking' });
       try {
-        const profileId = must(await supabase.rpc('link_profile'));
-        if (!profileId) { if (!cancelled) setAccess({ status: 'none' }); return; }
         const next = await loadData(userId);
         if (cancelled) return;
         if (!next.me || !next.tenant) { setAccess({ status: 'none' }); return; }
@@ -2808,8 +2791,8 @@ export default function App() {
 
   /* ----- Anzeige vor dem Laden ----- */
   if (session === undefined) return <LoadingScreen />;
-  if (!session) return <LoginScreen notice={URL_NOTICE} />;
-  if (access.status === 'none') return <NoAccess email={session.user.email} onLogout={logout} />;
+  if (!session) return <LoginScreen />;
+  if (access.status === 'none') return <NoAccess onLogout={logout} />;
   if (access.status === 'error') return <NoAccess message={access.message} onRetry={() => setRetry((n) => n + 1)} onLogout={logout} />;
   if (access.status !== 'ok' || !data) return <LoadingScreen />;
 
@@ -2920,7 +2903,6 @@ export default function App() {
       name: form.name.trim(),
       job_title: form.jobTitle.trim() || null,
       pers_no: form.persNo.trim() || null,
-      email: form.email.trim() ? form.email.trim().toLowerCase() : null,
     };
     if (mode === 'admin') row.department_id = form.dept || null;
     if (person) {
@@ -2939,9 +2921,24 @@ export default function App() {
     }
   }, person ? 'Änderungen gespeichert.' : 'Person erfasst.');
 
-  const setPin = (profileId, pin) => run(async () => {
-    must(await supabase.rpc('set_pin', { p_profile: profileId, p_pin: pin }));
-  }, pin ? 'PIN gespeichert.' : 'PIN entfernt.');
+  // Start-PINs erzeugen: Die Datenbank gibt sie genau einmal zurück
+  const issuePins = async (ids) => {
+    try {
+      const rows = must(await supabase.rpc('issue_pins', { p_profiles: ids }));
+      setPersonEdit(null);
+      setPinList(rows);
+      await reload();
+      return null;
+    } catch (err) {
+      const message = errorText(err);
+      notify(message, true);
+      return message;
+    }
+  };
+
+  const changeOwnPin = (pin) => run(async () => {
+    must(await supabase.rpc('change_own_pin', { p_pin: pin }));
+  }, 'Ihre PIN ist gespeichert.');
 
   const addDepartment = (name) => run(async () => {
     must(await supabase.from('departments').insert({ tenant_id: tenantId, name }));
@@ -2954,6 +2951,8 @@ export default function App() {
   };
 
   const showCert = (personId, deviceId) => setCertView({ personId, deviceId });
+
+  if (me.pin === 'initial') return <FirstPinScreen me={me} onSave={changeOwnPin} onLogout={logout} />;
 
   const certPerson = certView ? data.people.find((p) => p.id === certView.personId) : null;
   const certDevice = certView ? data.devices.find((d) => d.id === certView.deviceId) : null;
@@ -3001,6 +3000,7 @@ export default function App() {
             onSaveReminder={saveReminder}
             onEditPerson={(p) => setPersonEdit({ person: p, mode: isAdmin ? 'admin' : 'line' })}
             onNewPerson={() => setPersonEdit({ person: null, mode: isAdmin ? 'admin' : 'line' })}
+            onIssuePins={issuePins}
           />
         )}
 
@@ -3042,12 +3042,14 @@ export default function App() {
           deptId={lineDept}
           departments={data.departments}
           onSave={(person, form) => savePerson(person, form, personEdit.mode)}
-          onSetPin={setPin}
+          onIssuePin={issuePins}
           onClose={() => setPersonEdit(null)}
         />
       )}
 
-      {ownPin && <OwnPinModal person={me} onSetPin={setPin} onClose={() => setOwnPin(false)} />}
+      {ownPin && <OwnPinModal onSave={changeOwnPin} onClose={() => setOwnPin(false)} />}
+
+      {pinList && <PinListModal list={pinList} code={data.tenant.code} onClose={() => setPinList(null)} />}
     </div>
   );
 }
