@@ -90,10 +90,18 @@ exception when others then
 end
 $$;
 
-grant usage on schema test to anon, authenticated;
-grant insert, select on test.results to anon, authenticated;
-grant usage on sequence test.results_nr_seq to anon, authenticated;
-grant execute on all functions in schema test to anon, authenticated;
+-- Als Serverfunktion (Service-Zugang) handeln, wie die Edge Function "pin-login"
+create function test.as_service() returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, false);
+  execute 'set role service_role';
+end
+$$;
+
+grant usage on schema test to anon, authenticated, service_role;
+grant insert, select on test.results to anon, authenticated, service_role;
+grant usage on sequence test.results_nr_seq to anon, authenticated, service_role;
+grant execute on all functions in schema test to anon, authenticated, service_role;
 
 
 -- =====================================================================
@@ -312,3 +320,61 @@ select test.blocked('update public.certificates set instructor = ''System''', 'S
 select test.works(format('delete from public.tenants where id = %L', test.t('b')), 1, 'Vertragsende: Einrichtung B lässt sich als Ganzes löschen');
 select test.count_is(format('select (select count(*) from public.profiles where tenant_id = %1$L) + (select count(*) from public.certificates where tenant_id = %1$L) + (select count(*) from public.audit_logs where tenant_id = %1$L)', test.t('b')), 0, 'Vertragsende: von B bleibt nichts zurück');
 select test.count_is(format('select count(*) from public.certificates where tenant_id = %L', test.t('a')), 6, 'Vertragsende von B: Nachweise von A unberührt');
+
+
+-- =====================================================================
+-- I. ANMELDUNG MIT PERSONALNUMMER UND PIN
+-- =====================================================================
+select test.login('a_line1');
+select test.works(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '482915'), 1, 'Leitung: kann für Mitarbeitende der Abteilung eine PIN festlegen');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp3'), '482915'), 'Leitung: keine PIN für fremde Abteilung');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_qm'), '482915'), 'Leitung: keine PIN für QM');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '123456'), 'Einfache PIN (Folge) wird abgelehnt');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '777777'), 'Einfache PIN (gleiche Ziffern) wird abgelehnt');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '4829'), 'Zu kurze PIN wird abgelehnt');
+select test.count_is('select count(*) from public.pin_status()', 1, 'Leitung: sieht, wer eine PIN hat');
+select test.sees_nothing('select count(*) from app.profile_pins', 'Leitung: kann die gespeicherten PINs nicht lesen');
+select test.blocked(format('select * from public.verify_pin(%L, %L, %L)', 'klinik-nord', 'A-011', '482915'), 'Leitung: kann PINs nicht prüfen lassen');
+select test.blocked(format('select public.create_tenant(%L, %L, %L, %L)', 'Neu', 'neu-klinik', 'X', 'x@example.test'), 'Leitung: kann keine Einrichtung anlegen');
+reset role;
+
+select test.login('a_emp1');
+select test.works(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '590372'), 1, 'Mitarbeitende: kann die eigene PIN ändern');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp3'), '590372'), 'Mitarbeitende: keine PIN für andere');
+select test.count_is('select count(*) from public.pin_status()', 1, 'Mitarbeitende: sieht nur den eigenen PIN-Stand');
+reset role;
+
+select test.login('b_admin');
+select test.blocked(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '590372'), 'Admin B: keine PIN für Person von A');
+select test.count_is('select count(*) from public.pin_status()', 0, 'Admin B: sieht keine PINs von A');
+select test.blocked(format('select public.create_tenant(%L, %L, %L, %L)', 'Neu', 'neu-klinik', 'X', 'x@example.test'), 'Admin: kann keine Einrichtung anlegen');
+reset role;
+
+select test.as_service();
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L and profile_id = %L and user_id = %L', 'Klinik-Nord ', 'a-011', '590372', 'ok', test.p('a_emp1'), test.u('a_emp1')), 1, 'Richtige PIN: Anmeldung erlaubt (Code und Nummer ohne Rücksicht auf Gross/klein)');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '482915', 'invalid'), 1, 'Alte PIN gilt nicht mehr (Fehlversuch 1 von 5)');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'heim-sued', 'A-011', '590372', 'invalid'), 1, 'Richtige PIN, falsche Einrichtung: abgelehnt');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-012', '590372', 'invalid'), 1, 'Person ohne PIN: abgelehnt');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000001', 'invalid'), 1, 'Fehlversuch 2 von 5');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000002', 'invalid'), 1, 'Fehlversuch 3 von 5');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000003', 'invalid'), 1, 'Fehlversuch 4 von 5');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '000004', 'locked'), 1, 'Fünfter Fehlversuch: PIN gesperrt');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, %L) where status = %L', 'klinik-nord', 'A-011', '590372', 'locked'), 1, 'Gesperrt: auch die richtige PIN gilt 15 Minuten nicht');
+select test.works(format('select public.create_tenant(%L, %L, %L, %L)', 'Pflegeheim Test', 'heim-test', 'Hanna Heim', 'Hanna@Example.test'), 1, 'Service: kann eine Einrichtung mit Administrator anlegen');
+reset role;
+
+select test.login('a_line1');
+select test.count_is(format('select count(*) from public.pin_status() where locked and profile_id = %L', test.p('a_emp1')), 1, 'Leitung: sieht die gesperrte PIN');
+select test.works(format('select public.set_pin(%L, %L)', test.p('a_emp1'), '615204'), 1, 'Leitung: neue PIN hebt die Sperre auf');
+select test.count_is(format('select count(*) from public.audit_logs where action = %L', 'PIN nach 5 Fehlversuchen gesperrt: Eva Eins'), 1, 'Protokoll: Sperre festgehalten');
+select test.works(format('select public.set_pin(%L, null)', test.p('a_emp1')), 1, 'Leitung: kann eine PIN entfernen');
+select test.count_is('select count(*) from public.pin_status()', 0, 'Entfernte PIN ist weg');
+reset role;
+
+insert into auth.users (id, email, email_confirmed_at) values (test.u('hanna'), 'hanna@example.test', now());
+select test.login('hanna');
+select test.count_is('select count(*) where public.link_profile() is not null', 1, 'Neuer Administrator: wird beim ersten Login verknüpft');
+select test.count_is('select count(*) from public.profiles where role = ''admin''', 1, 'Neuer Administrator: sieht sich als Administrator');
+select test.no_rows_of('a', 'Neue Einrichtung sieht nichts von A');
+select test.works(format('insert into public.departments (tenant_id, name) select id, %L from public.tenants', 'Wohnbereich 1'), 1, 'Neuer Administrator: kann die erste Abteilung anlegen');
+reset role;

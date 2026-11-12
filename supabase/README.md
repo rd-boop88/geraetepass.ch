@@ -1,7 +1,8 @@
 # Datenbank der fertigen App
 
-Dieser Ordner enthält die Datenbank für die fertige App (Supabase, Region Zürich).
-Die Demo unter `src/` braucht ihn nicht und bleibt unverändert.
+Dieser Ordner enthält die Datenbank für die fertige App (Supabase, Projekt
+`geraetepass`, Region Zürich). Die Oberfläche liegt unter `src/fertig/`.
+Die Demo (`src/App.jsx`, erreichbar unter `/demo`) braucht keine Datenbank.
 
 ## Aufbau
 
@@ -11,7 +12,7 @@ sieht oder verändert (Row Level Security).
 
 | Tabelle | Inhalt |
 | --- | --- |
-| `tenants` | Einrichtungen (Kunden) mit Paket |
+| `tenants` | Einrichtungen (Kunden) mit Paket und Einrichtungscode |
 | `departments` | Abteilungen und Stationen |
 | `profiles` | Personen mit Rolle und Abteilung, verknüpft mit ihrem Login |
 | `devices` | Gerätetypen mit Schulungsintervall |
@@ -20,22 +21,44 @@ sieht oder verändert (Row Level Security).
 | `certificates` | Schulungsnachweise, nach dem Speichern unveränderlich |
 | `audit_logs` | Änderungsprotokoll, von der Datenbank selbst geschrieben |
 | `reminder_settings` | Erinnerungen pro Abteilung |
+| `app.profile_pins` | PINs, nur als Hash, vom Browser aus nicht erreichbar |
 
 ## Rollen
 
 | Rolle | Darf |
 | --- | --- |
-| `employee` | das eigene Profil, die eigenen Zuteilungen und Nachweise lesen |
-| `line` | die eigene Abteilung lesen, Personen und Geräte erfassen, zuteilen, Schulungen erfassen |
+| `employee` | das eigene Profil, die eigenen Zuteilungen und Nachweise lesen, die eigene PIN ändern |
+| `line` | die eigene Abteilung lesen, Personen und Geräte erfassen, zuteilen, Schulungen erfassen, PINs der Mitarbeitenden setzen |
 | `qm` | alles der eigenen Einrichtung lesen, nichts ändern |
 | `admin` | Abteilungen und Personen der eigenen Einrichtung pflegen, Rollen vergeben |
 
 Niemand kann Nachweise ändern oder löschen, auch der Administrator nicht.
 
+## Anmeldung
+
+- **E-Mail-Link:** Die Person gibt ihre Adresse ein und erhält einen Link. Beim ersten
+  Login verknüpft `link_profile()` das Login mit der Person, die mit derselben Adresse
+  erfasst ist. Für Adressen ohne Eintrag zeigt die App "Kein Gerätepass gefunden".
+- **Personalnummer und PIN** (Stations-Tablet): Einrichtungscode einmal pro Gerät,
+  dann Personalnummer und PIN. Die Edge Function `functions/pin-login` prüft die PIN
+  über `verify_pin()` (5 Fehlversuche sperren 15 Minuten) und gibt einen einmaligen
+  Anmelde-Schlüssel zurück. Nach 5 Minuten ohne Eingabe meldet die App ab.
+
+## Neue Einrichtung anlegen
+
+Nur mit Service-Zugang (SQL-Editor in Supabase), nicht aus der App:
+
+```sql
+select public.create_tenant('Spital Muster AG', 'spital-muster', 'Vorname Name', 'admin@spital-muster.ch');
+```
+
+Die genannte Person meldet sich danach per E-Mail-Link an und ist Administrator.
+Sie legt Abteilungen an, erfasst Stationsleitungen und vergibt Rollen.
+
 ## Prüfen
 
 `tests/run.sh` spielt alles in eine leere PostgreSQL-Datenbank ein und prüft die
-Zugriffsregeln mit zwei Test-Einrichtungen (135 Prüfungen). Nie gegen die echte
+Zugriffsregeln mit zwei Test-Einrichtungen (170 Prüfungen). Nie gegen die echte
 Datenbank laufen lassen, die Prüfungen legen Testdaten an.
 
 ```
@@ -43,7 +66,9 @@ createdb gp_test
 supabase/tests/run.sh "postgresql://postgres@localhost:5432/gp_test"
 ```
 
-Das Supabase-Projekt `geraetepass` (Region Zürich, eu-central-2) hat beide Migrationen; die Prüfungen liefen dort am 12.11.2026 ebenfalls ohne Fehler (in einer Transaktion, die danach verworfen wurde).
+Stand 12.11.2026: Alle Migrationen sind im Supabase-Projekt eingespielt. Die Prüfungen
+liefen dort ohne Fehler (in einer Transaktion, die danach verworfen wurde), die
+PIN-Anmeldung wurde mit Wegwerf-Daten gegen das echte Projekt getestet.
 
 Jede Änderung an den Zugriffsregeln braucht eine neue Datei unter `migrations/`
 und einen grünen Lauf dieser Prüfungen.

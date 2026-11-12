@@ -13,7 +13,7 @@ create function test.p(k text) returns uuid language sql immutable as $$ select 
 create function test.u(k text) returns uuid language sql immutable as $$ select test.id('user', k) $$;    -- Login
 create function test.g(k text) returns uuid language sql immutable as $$ select test.id('device', k) $$;  -- Gerät
 
-insert into public.tenants (id, name) values (test.t('a'), 'Klinik Nord'), (test.t('b'), 'Heim Süd');
+insert into public.tenants (id, name, code) values (test.t('a'), 'Klinik Nord', 'klinik-nord'), (test.t('b'), 'Heim Süd', 'heim-sued');
 
 insert into public.departments (id, tenant_id, name) values
   (test.d('a1'), test.t('a'), 'Intensivpflege'),
