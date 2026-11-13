@@ -37,7 +37,7 @@ const LEAD_OPTIONS = [
   { days: 90, label: '3 Monate' },
   { days: 180, label: '6 Monate' },
 ];
-const DEFAULT_REMINDER = { email: '', leads: [90, 30], expired: true, missing: true };
+const DEFAULT_REMINDER = { email: '', leads: [90], expired: true, missing: true };
 const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i;
 
 // Anmeldung mit Einrichtungscode, Personalnummer und PIN. Der Einrichtungscode bleibt
