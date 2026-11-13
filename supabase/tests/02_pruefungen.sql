@@ -99,8 +99,10 @@ end
 $$;
 
 create table test.pins (profile_id uuid, pin text);
+create table test.stations (label text, token text);
 grant usage on schema test to anon, authenticated, service_role;
 grant insert, select on test.pins to authenticated, service_role;
+grant insert, select on test.stations to anon, authenticated, service_role;
 grant insert, select on test.results to anon, authenticated, service_role;
 grant usage on sequence test.results_nr_seq to anon, authenticated, service_role;
 grant execute on all functions in schema test to anon, authenticated, service_role;
@@ -387,4 +389,78 @@ select test.count_is('select count(*) from public.profiles where role = ''admin'
 select test.count_is('select count(*) from public.pin_status() where must_change', 1, 'Neuer Administrator: muss die Start-PIN ändern');
 select test.no_rows_of('a', 'Neue Einrichtung sieht nichts von A');
 select test.works(format('insert into public.departments (tenant_id, name) select id, %L from public.tenants', 'Wohnbereich 1'), 1, 'Neuer Administrator: kann die erste Abteilung anlegen');
+reset role;
+
+
+-- =====================================================================
+-- J. GERÄTE BEARBEITEN
+-- =====================================================================
+select test.login('a_line1');
+select test.works(format('update public.devices set interval_months = 36 where id = %L', test.g('a_pumpe')), 1, 'Leitung: kann das Intervall eines Geräts ändern');
+select test.works(format('delete from public.department_devices where department_id = %L and device_id = %L', test.d('a1'), test.g('a_defi')), 1, 'Leitung: kann ein Gerät aus der eigenen Abteilung entfernen');
+select test.blocked(format('delete from public.department_devices where department_id = %L', test.d('a2')), 'Leitung: kann nichts aus fremder Abteilung entfernen');
+select test.count_is(format('select count(*) from public.audit_logs where action = %L', 'Gerät aus Intensivpflege entfernt: CardioShock Pro'), 1, 'Protokoll: Entfernen aus der Abteilung festgehalten');
+select test.count_is(format('select count(*) from public.certificates where device_id = %L', test.g('a_defi')), 2, 'Entfernen aus der Abteilung: Nachweise bleiben');
+reset role;
+select test.login('a_qm');
+select test.count_is(format('select count(*) from public.audit_logs where action = %L', 'Gerät geändert: InfusoMax V2 (Intervall 24 → 36 Monate)'), 1, 'Protokoll: Änderung am Gerät mit altem und neuem Wert');
+reset role;
+select test.login('b_admin');
+select test.blocked(format('update public.devices set interval_months = 1 where id = %L', test.g('a_pumpe')), 'Admin B: kann Gerät von A nicht ändern');
+reset role;
+
+
+-- =====================================================================
+-- K. STATIONS-TABLETS
+-- =====================================================================
+select test.login('a_line1');
+select test.works(format('insert into test.stations select %L, station_token from public.register_station(%L, %L)', 'a1', test.d('a1'), 'Tablet Stationszimmer'), 1, 'Leitung: richtet ein Tablet für die eigene Station ein');
+select test.count_is('select count(*) from test.stations where token ~ ''^[0-9a-f]{48}$''', 1, 'Tablet-Schlüssel ist lang und zufällig');
+select test.blocked(format('select * from public.register_station(%L, %L)', test.d('a2'), 'Fremd'), 'Leitung: kein Tablet für fremde Station');
+select test.blocked(format('select * from public.register_station(%L, %L)', test.d('a1'), ''), 'Tablet braucht einen Namen');
+select test.count_is('select count(*) from public.list_stations()', 1, 'Leitung: sieht das Tablet der eigenen Station');
+reset role;
+select test.login('a_emp1');
+select test.blocked(format('select * from public.register_station(%L, %L)', test.d('a1'), 'Eigenes'), 'Mitarbeitende: können kein Tablet einrichten');
+select test.count_is('select count(*) from public.list_stations()', 0, 'Mitarbeitende: sehen keine Tablets');
+reset role;
+select test.login('a_qm');
+select test.blocked(format('select * from public.register_station(%L, %L)', test.d('a1'), 'QM'), 'QM: kann kein Tablet einrichten');
+reset role;
+select test.login('a_admin');
+select test.works(format('insert into test.stations select %L, station_token from public.register_station(%L, %L)', 'a2', test.d('a2'), 'Tablet Bettenstation'), 1, 'Admin: richtet Tablet für jede Station ein');
+reset role;
+select test.login('a_qm');
+select test.count_is('select count(*) from public.list_stations()', 2, 'QM: sieht alle Tablets der Einrichtung');
+reset role;
+select test.login('b_admin');
+select test.count_is('select count(*) from public.list_stations()', 0, 'Admin B: sieht keine Tablets von A');
+select test.blocked('select public.remove_station((select id from app.station_devices limit 1))', 'Admin B: kann Tablet von A nicht entfernen');
+reset role;
+select test.blocked('select count(*) from app.station_devices', 'Tablet-Schlüssel sind für niemanden lesbar (ohne Anmeldung)') from (select test.login_anon()) x;
+reset role;
+
+-- Anmeldebildschirm des Tablets: ohne Anmeldung, nur mit dem Schlüssel
+select test.login_anon();
+select test.count_is('select count(*) from test.stations s, lateral (select public.station_team(s.token) as t) x where s.label = ''a1'' and x.t->>''department'' = ''Intensivpflege'' and x.t->>''code'' = ''klinik-nord''', 1, 'Tablet zeigt Einrichtung und Station');
+select test.count_is('select jsonb_array_length(public.station_team(token)->''team'') from test.stations where label = ''a1''', 2, 'Namensliste: nur Personen der Station mit PIN');
+select test.count_is(format('select count(*) from test.stations s, jsonb_array_elements(public.station_team(s.token)->''team'') e where s.label = ''a1'' and (e->>''id'')::uuid = %L', test.p('a_emp3')), 0, 'Namensliste: niemand aus anderen Stationen');
+select test.count_is('select count(*) from test.stations s where s.label = ''a1'' and public.station_team(s.token)::text ~ ''pers_no|A-0''', 0, 'Namensliste verrät keine Personalnummern');
+select test.count_is('select count(*) where public.station_team(''falsch'') is null', 1, 'Falscher Schlüssel: nichts');
+select test.blocked('select * from public.verify_pin_station((select token from test.stations limit 1), null, ''000000'')', 'Ohne Anmeldung: PIN-Prüfung nicht direkt aufrufbar');
+reset role;
+
+select test.as_service();
+select test.count_is(format('select count(*) from public.verify_pin_station((select token from test.stations where label = %L), %L, (select pin from test.pins where profile_id = %L)) where status = %L', 'a1', test.p('a_neu'), test.p('a_neu'), 'ok'), 1, 'Tablet: Name antippen und PIN: Anmeldung erlaubt');
+select test.count_is(format('select count(*) from public.verify_pin_station((select token from test.stations where label = %L), %L, %L) where status = %L', 'a1', test.p('a_emp3'), '590372', 'invalid'), 1, 'Tablet: Person einer anderen Station wird abgewiesen');
+select test.count_is(format('select count(*) from public.verify_pin_station(%L, %L, %L) where status = %L', 'falsch', test.p('a_neu'), '000000', 'no_station'), 1, 'Tablet: ungültiger Schlüssel wird erkannt');
+select test.count_is(format('select count(*) from public.verify_pin(%L, %L, (select pin from test.pins where profile_id = %L)) where status = %L', 'klinik-nord', 'A-013', test.p('a_neu'), 'ok'), 1, 'Anmeldung mit Personalnummer funktioniert weiterhin');
+reset role;
+
+select test.login('a_line1');
+select test.works('select public.remove_station((select id from public.list_stations() limit 1))', 1, 'Leitung: kann ihr Tablet entfernen');
+select test.count_is(format('select count(*) from public.audit_logs where action = %L', 'Stations-Tablet entfernt: Tablet Stationszimmer'), 1, 'Protokoll: Tablet entfernt');
+reset role;
+select test.login_anon();
+select test.count_is('select count(*) from test.stations where label = ''a1'' and public.station_team(token) is null', 1, 'Entferntes Tablet zeigt keine Namensliste mehr');
 reset role;

@@ -22,6 +22,7 @@ sieht oder verändert (Row Level Security).
 | `audit_logs` | Änderungsprotokoll, von der Datenbank selbst geschrieben |
 | `reminder_settings` | Erinnerungen pro Abteilung |
 | `app.profile_pins` | PINs, nur als Hash, vom Browser aus nicht erreichbar |
+| `app.station_devices` | eingerichtete Stations-Tablets, Schlüssel nur als Hash |
 
 ## Rollen
 
@@ -49,6 +50,13 @@ Es gibt keine Anmeldung per E-Mail und es werden keine E-Mails verschickt.
   einmaligen Anmelde-Schlüssel zurück. Nach 5 Minuten ohne Eingabe meldet die App ab.
 - **Keine fremden Konten:** Ein Trigger auf `auth.users` lässt nur Logins zu, die die
   PIN-Anmeldung selbst anlegt. Registrierungen über die Supabase-Schnittstelle scheitern.
+- **Personalnummer merken:** Auf persönlichen Geräten lässt sich die Personalnummer
+  speichern, dann braucht es nur noch die PIN.
+- **Stations-Tablet:** Die Stationsleitung meldet sich auf dem Tablet an und richtet es
+  unter «Team» für ihre Station ein (`register_station()`). Das Tablet erhält einen
+  zufälligen Schlüssel und zeigt danach beim Anmelden die Namen der Station mit PIN
+  (`station_team()`, ohne Personalnummern). Name antippen, PIN eingeben
+  (`verify_pin_station()`). Verlorene Tablets entfernt man unter «Team».
 - **PIN vergessen oder gesperrt:** neue Start-PIN erzeugen. **Austritt:** Person
   deaktivieren, die Anmeldung ist sofort gesperrt.
 
@@ -67,7 +75,7 @@ und erfasst danach Abteilungen, Stationsleitungen und Rollen.
 ## Prüfen
 
 `tests/run.sh` spielt alles in eine leere PostgreSQL-Datenbank ein und prüft die
-Zugriffsregeln mit zwei Test-Einrichtungen (179 Prüfungen). Nie gegen die echte
+Zugriffsregeln mit zwei Test-Einrichtungen (212 Prüfungen). Nie gegen die echte
 Datenbank laufen lassen, die Prüfungen legen Testdaten an.
 
 ```
@@ -75,9 +83,9 @@ createdb gp_test
 supabase/tests/run.sh "postgresql://postgres@localhost:5432/gp_test"
 ```
 
-Stand 12.11.2026: Alle Migrationen sind im Supabase-Projekt eingespielt. Die
-PIN-Anmeldung und die Sperre für fremde Konten wurden mit Wegwerf-Daten gegen das
-echte Projekt getestet.
+Stand 13.11.2026: Alle Migrationen sind im Supabase-Projekt eingespielt. PIN-Anmeldung
+(mit Personalnummer und am Stations-Tablet) und die Sperre für fremde Konten wurden
+mit Wegwerf-Daten gegen das echte Projekt getestet.
 
 Jede Änderung an den Zugriffsregeln braucht eine neue Datei unter `migrations/`
 und einen grünen Lauf dieser Prüfungen.

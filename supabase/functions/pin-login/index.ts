@@ -1,7 +1,9 @@
-// Anmeldung mit Einrichtungscode, Personalnummer und PIN (für Stations-Tablets).
+// Anmeldung mit PIN, auf zwei Wegen:
+//   - Einrichtungscode, Personalnummer und PIN
+//   - am Stations-Tablet: Schlüssel des Tablets, gewählter Name und PIN
 //
 // Ablauf:
-//   1. Die Datenbank prüft die PIN (verify_pin) und zählt Fehlversuche.
+//   1. Die Datenbank prüft die PIN (verify_pin bzw. verify_pin_station) und zählt Fehlversuche.
 //   2. Hat die Person noch kein Login, wird eines angelegt. Es trägt eine
 //      Platzhalter-Adresse, an die nie eine E-Mail geht.
 //   3. Die Funktion erzeugt einen einmaligen Anmelde-Schlüssel. Der Browser
@@ -28,7 +30,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return reply(405, { error: 'Nur POST ist erlaubt.' });
 
-  let input: { code?: unknown; persNo?: unknown; pin?: unknown };
+  let input: { code?: unknown; persNo?: unknown; station?: unknown; profileId?: unknown; pin?: unknown };
   try {
     input = await req.json();
   } catch {
@@ -36,9 +38,16 @@ Deno.serve(async (req) => {
   }
   const code = String(input.code ?? '').trim().toLowerCase();
   const persNo = String(input.persNo ?? '').trim();
+  const station = String(input.station ?? '').trim();
+  const profileId = String(input.profileId ?? '').trim();
   const pin = String(input.pin ?? '').trim();
-  if (!code || !persNo || !/^[0-9]{6,8}$/.test(pin) || code.length > 30 || persNo.length > 40) {
-    return reply(400, { error: 'Bitte Einrichtungscode, Personalnummer und die 6- bis 8-stellige PIN eingeben.' });
+  const viaStation = station !== '';
+  if (!/^[0-9]{6,8}$/.test(pin)) {
+    return reply(400, { error: 'Bitte die 6- bis 8-stellige PIN eingeben.' });
+  }
+  if (viaStation ? !/^[0-9a-f]{48}$/.test(station) || !/^[0-9a-f-]{36}$/.test(profileId)
+                 : !code || !persNo || code.length > 30 || persNo.length > 40) {
+    return reply(400, { error: 'Bitte Einrichtungscode, Personalnummer und PIN eingeben.' });
   }
 
   const url = Deno.env.get('SUPABASE_URL');
@@ -47,17 +56,22 @@ Deno.serve(async (req) => {
   const admin = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 
   // 1. PIN prüfen
-  const { data: rows, error: checkError } = await admin.rpc('verify_pin', { p_code: code, p_pers_no: persNo, p_pin: pin });
+  const { data: rows, error: checkError } = viaStation
+    ? await admin.rpc('verify_pin_station', { p_token: station, p_profile: profileId, p_pin: pin })
+    : await admin.rpc('verify_pin', { p_code: code, p_pers_no: persNo, p_pin: pin });
   if (checkError || !rows || !rows[0]) {
     console.error('verify_pin', checkError);
     return reply(500, { error: 'Die Anmeldung ist zurzeit nicht möglich.' });
   }
   const result = rows[0] as { status: string; profile_id: string | null; user_id: string | null };
+  if (result.status === 'no_station') {
+    return reply(410, { error: 'Dieses Tablet ist nicht mehr als Stations-Tablet eingerichtet.', station: 'removed' });
+  }
   if (result.status === 'locked') {
     return reply(429, { error: 'Zu viele Fehlversuche. Die PIN ist für 15 Minuten gesperrt.' });
   }
   if (result.status !== 'ok' || !result.profile_id) {
-    return reply(401, { error: 'Einrichtungscode, Personalnummer oder PIN stimmen nicht.' });
+    return reply(401, { error: viaStation ? 'Die PIN stimmt nicht.' : 'Einrichtungscode, Personalnummer oder PIN stimmen nicht.' });
   }
 
   // 2. Login der Person bestimmen oder anlegen

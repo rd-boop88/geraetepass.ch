@@ -218,7 +218,7 @@ const formatDateTime = (iso) => {
 // Mitarbeitende erhalten nur sich, die Stationsleitung ihre Abteilung, QM und
 // Administrator die ganze Einrichtung.
 async function loadData(userId) {
-  const [tenantRes, departments, profiles, devices, deptDevices, assignments, certificates, reminders, logRes, pinRes] = await Promise.all([
+  const [tenantRes, departments, profiles, devices, deptDevices, assignments, certificates, reminders, logRes, pinRes, stationRes] = await Promise.all([
     supabase.from('tenants').select('id, name, code').maybeSingle(),
     selectAll('departments', 'id, name, short_name', ['name', 'id']),
     selectAll('profiles', 'id, user_id, name, job_title, pers_no, email, role, department_id, active', ['name', 'id']),
@@ -229,6 +229,7 @@ async function loadData(userId) {
     selectAll('reminder_settings', 'department_id, email, lead_days, include_expired, include_missing', ['department_id']),
     supabase.from('audit_logs').select('id, actor_name, action, created_at').order('created_at', { ascending: false }).limit(200),
     supabase.rpc('pin_status'),
+    supabase.rpc('list_stations'),
   ]);
   const tenant = must(tenantRes);
   const logRows = must(logRes);
@@ -292,6 +293,7 @@ async function loadData(userId) {
     })),
     people,
     reminders: reminderMap,
+    stations: must(stationRes),
     log: logRows.map((row) => ({ id: row.id, time: formatDateTime(row.created_at), text: row.actor_name + ': ' + row.action })),
   };
 }
@@ -805,7 +807,7 @@ function Segmented({ label, options, value, onChange }) {
 }
 
 // Fenster über der Seite. Auf dem Handy fährt es von unten herein. Schliesst mit Escape oder Klick daneben.
-function Modal({ label, onClose, children }) {
+function Modal({ label, onClose, children, wide }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -818,7 +820,7 @@ function Modal({ label, onClose, children }) {
         role="dialog"
         aria-modal="true"
         aria-label={label}
-        className="gp-sheet max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-6"
+        className={'gp-sheet max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:rounded-2xl sm:p-6 ' + (wide ? 'sm:max-w-5xl' : 'sm:max-w-lg')}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between gap-4">
@@ -934,13 +936,17 @@ function SignaturePad({ name, onChange }) {
 
 /* ---------- 6.1 Anmeldung ---------- */
 
-function LoginScreen() {
+const PERSNO_KEY = 'geraetepass_personalnummer';
+
+function LoginScreen({ notice, onStation }) {
   const savedCode = store.get(CODE_KEY) || '';
+  const savedPersNo = store.get(PERSNO_KEY) || '';
+  const [remember, setRemember] = useState(!!savedPersNo);
   const [code, setCode] = useState(savedCode);
   const [editCode, setEditCode] = useState(!savedCode);
-  const [persNo, setPersNo] = useState('');
+  const [persNo, setPersNo] = useState(savedPersNo);
   const [pin, setPin] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(notice || '');
   const [busy, setBusy] = useState(false);
 
   const login = async (e) => {
@@ -966,6 +972,8 @@ function LoginScreen() {
       store.set(PIN_SESSION_KEY, '1');
       store.set(ACTIVITY_KEY, String(Date.now()));
       store.set(CODE_KEY, cleanCode);
+      if (remember && !onStation) store.set(PERSNO_KEY, persNo.trim());
+      else store.remove(PERSNO_KEY);
       const { error: verifyError } = await supabase.auth.verifyOtp({ token_hash: data.token_hash, type: 'magiclink' });
       if (verifyError) throw new Error('Die Anmeldung ist fehlgeschlagen. Bitte erneut versuchen.');
     } catch (err) {
@@ -1004,13 +1012,20 @@ function LoginScreen() {
           </div>
           <div>
             <label htmlFor="gp-pin" className={ui.label}>PIN</label>
-            <input id="gp-pin" type="password" inputMode="numeric" autoComplete="current-password" maxLength={8} value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }} className={ui.input} />
+            <input id="gp-pin" type="password" inputMode="numeric" autoComplete="current-password" maxLength={8} autoFocus={!!savedPersNo} value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }} className={ui.input} />
           </div>
+          {!onStation && (
+            <label className="flex min-h-[32px] cursor-pointer items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="h-4 w-4 accent-[#17324D]" />
+              Personalnummer auf diesem Gerät merken
+            </label>
+          )}
           {error && <p role="alert" className="text-sm font-medium text-red-700">{error}</p>}
           <button type="submit" disabled={busy} className={ui.btnPrimary + ' w-full'}>
             <Lock /> {busy ? 'Wird geprüft …' : 'Anmelden'}
           </button>
           <p className="text-xs text-slate-500">PIN vergessen? Die Stationsleitung erzeugt eine neue Start-PIN.</p>
+          {onStation && <button type="button" onClick={onStation} className={ui.link}>Zurück zur Namensliste</button>}
         </form>
       </div>
     </div>
@@ -1718,9 +1733,9 @@ function ImportBar({ label, hint, error, onFile, onTemplate, children }) {
 
 /* ---------- 6.8 Stationsleitung: Geräteinventar ---------- */
 
-const INVENTORY_COLS = 'md:grid md:grid-cols-[1.4fr_1.6fr_1fr_1.4fr_1fr] md:gap-4';
+const INVENTORY_COLS = 'md:grid md:grid-cols-[1.4fr_1.6fr_1fr_1.4fr_1fr_8rem] md:gap-4';
 
-function InventoryTab({ deptId, devices, allDevices, onImport }) {
+function InventoryTab({ deptId, devices, allDevices, onImport, onEditDevice }) {
   const [onlyMedical, setOnlyMedical] = useState(true);
   const [draft, setDraft] = useState(null); // gelesene Datei, wartet auf Bestätigung
   const [error, setError] = useState('');
@@ -1786,7 +1801,7 @@ function InventoryTab({ deptId, devices, allDevices, onImport }) {
       </ImportBar>
 
       <div className={'hidden border-b border-slate-200 bg-slate-50 px-6 py-3 text-sm font-semibold text-slate-600 ' + INVENTORY_COLS}>
-        <span>Modell</span><span>Gerätetyp</span><span>Risikoklasse</span><span>Hersteller</span><span>Wiederholung</span>
+        <span>Modell</span><span>Gerätetyp</span><span>Risikoklasse</span><span>Hersteller</span><span>Wiederholung</span><span className="sr-only">Bearbeiten</span>
       </div>
       {visible.length === 0 ? (
         <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Das Inventar dieser Abteilung ist noch leer. Importieren Sie eine Geräteliste.</p>
@@ -1807,6 +1822,9 @@ function InventoryTab({ deptId, devices, allDevices, onImport }) {
               <div className="text-slate-500 md:text-slate-600">
                 {needsTraining(d) ? 'alle ' + d.interval + ' Monate' : 'keine Schulungspflicht'}
               </div>
+              <button type="button" onClick={() => onEditDevice(d)} aria-label={d.model + ' bearbeiten'} className={ui.btnSecondary + ' mt-2 w-full sm:w-auto md:mt-0'}>
+                <Pencil /> Bearbeiten
+              </button>
             </li>
           ))}
         </ul>
@@ -2105,7 +2123,7 @@ const LINE_TABS = [
   { id: 'team', label: 'Team' },
 ];
 
-function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDevices, defaultInstructor, canEditPerson, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder, onEditPerson, onNewPerson, onIssuePins }) {
+function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDevices, defaultInstructor, canEditPerson, tab, preset, reminder, stations, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder, onEditPerson, onNewPerson, onIssuePins, onEditDevice, onReport, onRegisterStation, onRemoveStation }) {
   const [editMode, setEditMode] = useState(false);
   const [filter, setFilter] = useState([]); // in der Matrix gewählte Status (leer = alle Personen)
   const [showReminder, setShowReminder] = useState(false);
@@ -2137,6 +2155,9 @@ function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDe
             )}
             <button type="button" onClick={() => setShowReminder(true)} className={ui.btnSecondary + ' w-full'}>
               <Bell /> {reminder.email ? 'Erinnerungen: eingerichtet' : 'Erinnerungen einrichten'}
+            </button>
+            <button type="button" onClick={onReport} className={ui.btnSecondary + ' mt-2 w-full'}>
+              <Printer /> Bericht und Export
             </button>
           </div>
         </div>
@@ -2180,9 +2201,10 @@ function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDe
         <TrainingTab key={preset ? preset.key : 'leer'} devices={trainDevices} staffList={staffList} preset={preset} defaultInstructor={defaultInstructor} onSave={onSaveTraining} />
       )}
 
-      {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} />}
+      {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} onEditDevice={onEditDevice} />}
 
       {tab === 'team' && <TeamTab deptId={deptId} staffList={staffList} allStaff={allStaff} devices={deptDevices} canEditPerson={canEditPerson} onImport={onImportStaff} onEditPerson={onEditPerson} onNewPerson={onNewPerson} onIssuePins={onIssuePins} />}
+      {tab === 'team' && <StationSection deptId={deptId} stations={stations} onRegister={onRegisterStation} onRemove={onRemoveStation} />}
 
       {showReminder && (
         <ReminderModal
@@ -2200,7 +2222,7 @@ function LineView({ deptId, deptOptions, staffList, deptDevices, allStaff, allDe
 
 /* ---------- 6.12 QM: Klinik-Übersicht (nur lesen) ---------- */
 
-function QmView({ staff, devices, log, onShowCert }) {
+function QmView({ staff, devices, log, onShowCert, onReport }) {
   const [filter, setFilter] = useState([]); // gilt für alle Abteilungen gleichzeitig
 
   return (
@@ -2211,6 +2233,9 @@ function QmView({ staff, devices, log, onShowCert }) {
         <p className="mt-1 max-w-2xl text-sm text-slate-600">
           Alle Abteilungen im Überblick, nur lesend. Zuteilungen und Schulungen pflegen die Stationsleitungen.
         </p>
+        <button type="button" onClick={onReport} className={ui.btnSecondary + ' mt-4'}>
+          <Printer /> Bericht und Export aller Nachweise
+        </button>
         <div className="mt-5 border-t border-slate-200 pt-5">
           <Progress sum={summarize(staff, devices)} label="Gesamte Einrichtung" />
         </div>
@@ -2537,6 +2562,409 @@ function OwnPinModal({ onSave, onClose }) {
   );
 }
 
+/* ---------- 6.16 Gerät bearbeiten ---------- */
+
+const RISK_CHOICES = [
+  { value: '', label: 'Nicht angegeben' },
+  { value: 'I', label: 'Klasse I' },
+  { value: 'IIa', label: 'Klasse IIa' },
+  { value: 'IIb', label: 'Klasse IIb' },
+  { value: 'III', label: 'Klasse III' },
+  { value: NON_MEDICAL, label: 'Kein Medizinprodukt' },
+];
+
+function DeviceModal({ device, deptId, onSave, onRemove, onClose }) {
+  const [form, setForm] = useState({
+    model: device.model,
+    category: device.category,
+    vendor: device.vendor,
+    risk: device.risk,
+    interval: String(device.interval),
+  });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const change = (patch) => { setForm((prev) => ({ ...prev, ...patch })); setError(''); };
+  const otherDepts = device.depts.filter((id) => id !== deptId).length;
+  const knownRisk = RISK_CHOICES.some((c) => c.value === form.risk);
+
+  const save = async (e) => {
+    e.preventDefault();
+    const interval = form.risk === NON_MEDICAL ? 0 : parseInt(form.interval, 10);
+    if (!form.model.trim()) { setError('Bitte das Modell eingeben.'); return; }
+    if (Number.isNaN(interval) || interval < 0 || interval > 120) { setError('Das Intervall liegt zwischen 0 und 120 Monaten (0 = keine Schulungspflicht).'); return; }
+    setBusy(true);
+    const err = await onSave(device.id, { ...form, interval });
+    setBusy(false);
+    if (err) setError(err);
+    else onClose();
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    const err = await onRemove(device.id);
+    setBusy(false);
+    if (err) setError(err);
+    else onClose();
+  };
+
+  return (
+    <Modal label="Gerät bearbeiten" onClose={onClose}>
+      <h2 className="text-xl font-semibold tracking-tight text-slate-900">{device.model}</h2>
+      <p className="text-sm text-slate-500">
+        {otherDepts > 0
+          ? 'Steht auch in ' + plural(otherDepts, 'weiteren Abteilung', 'weiteren Abteilungen') + '. Änderungen gelten überall.'
+          : 'Änderungen werden im Protokoll festgehalten.'}
+      </p>
+
+      <form onSubmit={save} className="mt-5 space-y-4">
+        <div>
+          <label htmlFor="gp-d-model" className={ui.label}>Modell</label>
+          <input id="gp-d-model" value={form.model} onChange={(e) => change({ model: e.target.value })} className={ui.input} />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="gp-d-cat" className={ui.label}>Gerätetyp</label>
+            <input id="gp-d-cat" value={form.category} onChange={(e) => change({ category: e.target.value })} className={ui.input} />
+          </div>
+          <div>
+            <label htmlFor="gp-d-vendor" className={ui.label}>Hersteller</label>
+            <input id="gp-d-vendor" value={form.vendor} onChange={(e) => change({ vendor: e.target.value })} className={ui.input} />
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="gp-d-risk" className={ui.label}>Risikoklasse nach MepV</label>
+            <select id="gp-d-risk" value={form.risk} onChange={(e) => change({ risk: e.target.value, interval: e.target.value === NON_MEDICAL ? '0' : form.interval === '0' ? String(DEFAULT_INTERVAL) : form.interval })} className={ui.input}>
+              {!knownRisk && <option value={form.risk}>{form.risk}</option>}
+              {RISK_CHOICES.map((c) => <option key={c.label} value={c.value}>{c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="gp-d-interval" className={ui.label}>Wiederholung (Monate)</label>
+            <input id="gp-d-interval" type="number" min="0" max="120" inputMode="numeric" disabled={form.risk === NON_MEDICAL} value={form.interval} onChange={(e) => change({ interval: e.target.value })} className={ui.input + ' disabled:bg-slate-100 disabled:text-slate-400'} />
+            <p className="mt-1.5 text-xs text-slate-500">0 = keine Schulungspflicht</p>
+          </div>
+        </div>
+        {String(device.interval) !== String(form.risk === NON_MEDICAL ? 0 : form.interval) && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+            Ein neues Intervall verschiebt das «gültig bis» aller bisherigen Schulungen an diesem Gerät.
+          </p>
+        )}
+
+        {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800">{error}</p>}
+
+        <div className="flex flex-col gap-2 sm:flex-row-reverse">
+          <button type="submit" disabled={busy} className={ui.btnPrimary + ' sm:flex-1'}>Änderungen speichern</button>
+          <button type="button" onClick={onClose} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}>Abbrechen</button>
+        </div>
+      </form>
+
+      <div className="mt-6 border-t border-slate-200 pt-5">
+        <h3 className="text-sm font-semibold text-slate-900">Nicht mehr auf dieser Station</h3>
+        {confirmRemove ? (
+          <div className="mt-2 space-y-3">
+            <p className="text-sm text-slate-600">
+              Das Gerät verschwindet aus Inventar und Matrix von {deptById(deptId).name}. Die Nachweise bleiben erhalten.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy} onClick={remove} className={ui.btnPrimary + ' bg-red-700 hover:bg-red-800'}>Ja, entfernen</button>
+              <button type="button" onClick={() => setConfirmRemove(false)} className={ui.btnSecondary}>Abbrechen</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setConfirmRemove(true)} className={ui.link + ' mt-1 min-h-[32px]'}>Aus dieser Abteilung entfernen</button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+/* ---------- 6.17 Bericht aller Nachweise (Druck/PDF und Tabelle) ---------- */
+
+// Eine Zeile pro Person und schulungspflichtigem Gerät, nach Abteilung
+function reportRows(departments, staff, devices) {
+  const rows = [];
+  departments.forEach((dept) => {
+    const deptDevices = devices.filter((d) => d.depts.includes(dept.id) && needsTraining(d));
+    staff.filter((p) => p.dept === dept.id).forEach((person) => {
+      deptDevices.filter((d) => person.assigned.includes(d.id)).forEach((device) => {
+        const records = person.certs[device.id] || [];
+        const latest = records[records.length - 1];
+        rows.push({ dept, person, device, latest, status: getStatus(device, records) });
+      });
+    });
+  });
+  return rows;
+}
+
+function downloadReportTable(rows, fileName) {
+  const head = ['Abteilung', 'Name', 'Personalnummer', 'Funktion', 'Gerät', 'Gerätetyp', 'Risikoklasse', 'Intervall (Monate)',
+    'Letzte Schulung', 'Art', 'Instruktor/in', 'Gültig bis', 'Status'];
+  const body = rows.map((r) => [
+    r.dept.name, r.person.name, r.person.persNo, r.person.role, r.device.model, r.device.category, r.device.risk,
+    String(r.device.interval), r.latest ? formatDate(r.latest.date) : '', r.latest ? r.latest.type : '',
+    r.latest ? r.latest.instructor : '', r.status.validUntil ? formatDate(r.status.validUntil) : '', STATUS[r.status.key].label,
+  ].map((v) => String(v == null ? '' : v)));
+  downloadTemplate(fileName, [head].concat(body));
+}
+
+function ReportModal({ title, departments, staff, devices, onClose }) {
+  const rows = reportRows(departments, staff, devices);
+  const today = formatDate(todayISO());
+
+  useEffect(() => {
+    document.documentElement.classList.add('gp-cert-open');
+    return () => document.documentElement.classList.remove('gp-cert-open');
+  }, []);
+
+  return (
+    <Modal label="Bericht Schulungsnachweise" onClose={onClose} wide>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Schulungsnachweise</h2>
+          <p className="text-sm text-slate-600">{CLIENT_NAME}, {title}, Stand {today}</p>
+        </div>
+        <div className="gp-no-print flex flex-wrap gap-2">
+          <button type="button" onClick={() => downloadReportTable(rows, 'schulungsnachweise-' + todayISO() + '.csv')} className={ui.btnSecondary}>
+            <Download /> Tabelle (CSV)
+          </button>
+          <button type="button" onClick={() => window.print()} className={ui.btnPrimary}>
+            <Printer /> Drucken oder als PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-slate-200 pt-4">
+        <Progress sum={summarize(staff, devices)} label="Stand" />
+      </div>
+
+      {departments.map((dept) => {
+        const deptRows = rows.filter((r) => r.dept.id === dept.id);
+        return (
+          <section key={dept.id} className="mt-6 break-inside-avoid-page">
+            <h3 className="mb-2 text-base font-semibold text-slate-900">{dept.name}</h3>
+            {deptRows.length === 0 ? (
+              <p className="text-sm text-slate-500">Keine schulungspflichtigen Zuteilungen.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b-2 border-slate-300 text-slate-600">
+                      <th className="py-1.5 pr-3 font-semibold">Name</th>
+                      <th className="py-1.5 pr-3 font-semibold">Gerät</th>
+                      <th className="py-1.5 pr-3 font-semibold">Klasse</th>
+                      <th className="py-1.5 pr-3 font-semibold">Letzte Schulung</th>
+                      <th className="py-1.5 pr-3 font-semibold">Instruktor/in</th>
+                      <th className="py-1.5 pr-3 font-semibold">Gültig bis</th>
+                      <th className="py-1.5 font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deptRows.map((r) => (
+                      <tr key={r.person.id + r.device.id} className="border-b border-slate-200 align-top">
+                        <td className="py-1.5 pr-3"><span className="font-medium text-slate-900">{r.person.name}</span>{r.person.persNo && <span className="block text-slate-500">{r.person.persNo}</span>}</td>
+                        <td className="py-1.5 pr-3">{r.device.model}<span className="block text-slate-500">{r.device.category}</span></td>
+                        <td className="py-1.5 pr-3">{r.device.risk || '–'}</td>
+                        <td className="py-1.5 pr-3">{r.latest ? formatDate(r.latest.date) : '–'}{r.latest && <span className="block text-slate-500">{r.latest.type}</span>}</td>
+                        <td className="py-1.5 pr-3">{r.latest ? r.latest.instructor : '–'}</td>
+                        <td className="py-1.5 pr-3">{r.status.validUntil ? formatDate(r.status.validUntil) : '–'}</td>
+                        <td className={'py-1.5 font-semibold ' + (r.status.key === 'valid' ? 'text-emerald-700' : r.status.key === 'dueSoon' ? 'text-amber-700' : 'text-red-700')}>{STATUS[r.status.key].label}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        );
+      })}
+
+      <p className="mt-6 text-xs text-slate-500">
+        Erstellt mit geraetepass.ch am {today}. Unterschriften und frühere Schulungen stehen im einzelnen Nachweis in der App.
+      </p>
+    </Modal>
+  );
+}
+
+
+/* ---------- 6.18 Stations-Tablets ---------- */
+
+const STATION_KEY = 'geraetepass_station';
+const readStation = () => {
+  try { return JSON.parse(store.get(STATION_KEY) || 'null'); } catch (e) { return null; }
+};
+
+// Liste der eingerichteten Tablets einer Station, mit Einrichten und Entfernen
+function StationSection({ deptId, stations, onRegister, onRemove }) {
+  const [label, setLabel] = useState('');
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const here = readStation();
+  const list = stations.filter((s) => s.department_id === deptId);
+
+  const register = async (e) => {
+    e.preventDefault();
+    if (!label.trim()) { setError('Bitte dem Tablet einen Namen geben.'); return; }
+    setBusy(true);
+    const err = await onRegister(deptId, label.trim());
+    setBusy(false);
+    if (err) setError(err);
+    else { setLabel(''); setOpen(false); }
+  };
+
+  return (
+    <section className={ui.panel + ' overflow-hidden'}>
+      <div className="border-b border-slate-200 px-4 py-4 sm:px-6">
+        <h2 className="text-lg font-semibold text-slate-900">Stations-Tablets</h2>
+        <p className="max-w-2xl text-sm text-slate-500">
+          Ein Stations-Tablet zeigt beim Anmelden die Namen der Station. Man tippt auf den eigenen Namen und gibt die PIN ein.
+          Richten Sie das Tablet ein, indem Sie sich auf dem Tablet selbst anmelden.
+        </p>
+        {here && stations.some((st) => st.id === here.id) ? (
+          <p className="mt-3 text-sm font-medium text-slate-700">Dieses Gerät ist bereits als Stations-Tablet eingerichtet.</p>
+        ) : open ? (
+          <form onSubmit={register} className="mt-3 flex flex-wrap items-start gap-2">
+            <div className="w-full sm:w-72">
+              <label htmlFor="gp-station-label" className="sr-only">Name des Tablets</label>
+              <input id="gp-station-label" placeholder="z. B. Tablet Stationszimmer" value={label} onChange={(e) => { setLabel(e.target.value); setError(''); }} className={ui.input} />
+            </div>
+            <button type="submit" disabled={busy} className={ui.btnPrimary}>Einrichten</button>
+            <button type="button" onClick={() => setOpen(false)} className={ui.btnSecondary}>Abbrechen</button>
+          </form>
+        ) : (
+          <button type="button" onClick={() => setOpen(true)} className={ui.btnSecondary + ' mt-3'}>
+            Dieses Gerät als Stations-Tablet einrichten
+          </button>
+        )}
+        {error && <p role="alert" className="mt-2 text-sm font-medium text-red-700">{error}</p>}
+      </div>
+      {list.length === 0 ? (
+        <p className="px-4 py-5 text-sm text-slate-500 sm:px-6">Noch kein Tablet eingerichtet.</p>
+      ) : (
+        <ul className="divide-y divide-slate-200 text-sm">
+          {list.map((s) => (
+            <li key={s.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+              <div>
+                <span className="font-semibold text-slate-900">{s.label}</span>
+                {here && here.id === s.id && <span className="ml-2 rounded-full bg-[#17324D] px-2 py-0.5 text-xs font-semibold text-white">Dieses Gerät</span>}
+                <span className="block text-slate-500">
+                  Eingerichtet {formatDate(toISO(new Date(s.created_at)))}{s.last_used_at ? ', zuletzt benutzt ' + formatDateTime(s.last_used_at) : ', noch nicht benutzt'}
+                </span>
+              </div>
+              <button type="button" onClick={() => onRemove(s.id)} className={ui.link}>Entfernen</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Anmeldung am Stations-Tablet: Name antippen, PIN eingeben
+function StationLogin({ station, onOther, onGone }) {
+  const [info, setInfo] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [chosen, setChosen] = useState(null);
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const pinRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    supabase.rpc('station_team', { p_token: station.token }).then(({ data, error: err }) => {
+      if (cancelled) return;
+      if (err) { setLoadError('Die Namensliste lässt sich gerade nicht laden. Bitte die Internetverbindung prüfen.'); return; }
+      if (!data) { onGone(); return; }
+      setInfo(data);
+    });
+    return () => { cancelled = true; };
+  }, [station.token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { if (chosen && pinRef.current) pinRef.current.focus(); }, [chosen]);
+
+  const login = async (e) => {
+    e.preventDefault();
+    if (!/^[0-9]{6,8}$/.test(pin)) { setError('Bitte die 6- bis 8-stellige PIN eingeben.'); return; }
+    setBusy(true);
+    setError('');
+    try {
+      const { data, error: err } = await supabase.functions.invoke('pin-login', { body: { station: station.token, profileId: chosen.id, pin } });
+      if (err) {
+        let body = null;
+        try { body = await err.context.json(); } catch (x) { /* keine Antwort lesbar */ }
+        if (body && body.station === 'removed') { onGone(); return; }
+        throw new Error((body && body.error) || 'Die Anmeldung ist zurzeit nicht möglich. Bitte später erneut versuchen.');
+      }
+      store.set(PIN_SESSION_KEY, '1');
+      store.set(ACTIVITY_KEY, String(Date.now()));
+      const { error: verifyError } = await supabase.auth.verifyOtp({ token_hash: data.token_hash, type: 'magiclink' });
+      if (verifyError) throw new Error('Die Anmeldung ist fehlgeschlagen. Bitte erneut versuchen.');
+    } catch (err) {
+      store.remove(PIN_SESSION_KEY);
+      setError(err.message);
+      setPin('');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div lang="de" className="min-h-screen bg-slate-100 p-4 text-slate-800 sm:p-8">
+      <div className={ui.panel + ' mx-auto w-full max-w-3xl p-5 sm:p-8'}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <Logo size="lg" />
+          <div className="text-right text-sm text-slate-500">
+            {info ? <><div className="font-semibold text-slate-900">{info.department}</div><div>{info.tenant}</div></> : station.label}
+          </div>
+        </div>
+
+        {loadError && <p role="alert" className="mt-6 text-sm font-medium text-red-700">{loadError}</p>}
+        {!info && !loadError && <p role="status" className="mt-6 text-sm text-slate-500">Namensliste wird geladen …</p>}
+
+        {info && !chosen && (
+          <>
+            <h1 className="mt-6 text-xl font-semibold text-slate-900">Wer meldet sich an?</h1>
+            {info.team.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-600">Auf dieser Station hat noch niemand eine PIN. Die Stationsleitung erzeugt Start-PINs im Bereich «Team».</p>
+            ) : (
+              <ul className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {info.team.map((person) => (
+                  <li key={person.id}>
+                    <button type="button" onClick={() => { setChosen(person); setError(''); setPin(''); }} className={FOCUS + 'flex min-h-[56px] w-full items-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-left text-base font-semibold text-slate-900 hover:border-[#17324D] hover:bg-slate-50'}>
+                      {person.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+
+        {info && chosen && (
+          <form onSubmit={login} className="mx-auto mt-6 max-w-sm space-y-4">
+            <h1 className="text-xl font-semibold text-slate-900">{chosen.name}</h1>
+            <div>
+              <label htmlFor="gp-station-pin" className={ui.label}>PIN</label>
+              <input id="gp-station-pin" ref={pinRef} type="password" inputMode="numeric" autoComplete="off" maxLength={8} value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }} className={ui.input + ' text-center text-2xl tracking-[0.5em]'} />
+            </div>
+            {error && <p role="alert" className="text-sm font-medium text-red-700">{error}</p>}
+            <button type="submit" disabled={busy} className={ui.btnPrimary + ' w-full'}><Lock /> {busy ? 'Wird geprüft …' : 'Anmelden'}</button>
+            <button type="button" onClick={() => { setChosen(null); setPin(''); setError(''); }} className={ui.btnSecondary + ' min-h-[44px] w-full'}>Anderer Name</button>
+          </form>
+        )}
+
+        <p className="mt-8 border-t border-slate-200 pt-4 text-sm text-slate-500">
+          Nicht auf der Liste?{' '}
+          <button type="button" onClick={onOther} className={ui.link}>Mit Personalnummer anmelden</button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- 6.15 Verwaltung (Administrator) ---------- */
 
 function AdminView({ tenant, departments, people, onAddDept, onEditPerson, onNewPerson }) {
@@ -2659,7 +3087,13 @@ export default function App() {
   const [personEdit, setPersonEdit] = useState(null); // { person, mode }
   const [ownPin, setOwnPin] = useState(false);
   const [pinList, setPinList] = useState(null);
+  const [deviceEdit, setDeviceEdit] = useState(null);
+  const [report, setReport] = useState(null); // { title, departments, staff, devices }
   const [toast, setToast] = useState(null);
+  // Stations-Tablet: Namensliste zeigen, ausser jemand will sich mit Personalnummer anmelden
+  const [station, setStation] = useState(readStation);
+  const [usePersNo, setUsePersNo] = useState(false);
+  const [loginNotice, setLoginNotice] = useState('');
 
   const userId = session ? session.user.id : null;
 
@@ -2704,6 +3138,9 @@ export default function App() {
     setPersonEdit(null);
     setOwnPin(false);
     setPinList(null);
+    setDeviceEdit(null);
+    setReport(null);
+    setUsePersNo(false);
     await supabase.auth.signOut();
     setSession(null);
   }, []);
@@ -2791,7 +3228,22 @@ export default function App() {
 
   /* ----- Anzeige vor dem Laden ----- */
   if (session === undefined) return <LoadingScreen />;
-  if (!session) return <LoginScreen />;
+  if (!session) {
+    if (station && !usePersNo) {
+      return (
+        <StationLogin
+          station={station}
+          onOther={() => setUsePersNo(true)}
+          onGone={() => {
+            store.remove(STATION_KEY);
+            setStation(null);
+            setLoginNotice('Dieses Gerät ist nicht mehr als Stations-Tablet eingerichtet. Bitte mit Personalnummer anmelden.');
+          }}
+        />
+      );
+    }
+    return <LoginScreen key={station ? 'station' : 'normal'} notice={loginNotice} onStation={station ? () => setUsePersNo(false) : null} />;
+  }
   if (access.status === 'none') return <NoAccess onLogout={logout} />;
   if (access.status === 'error') return <NoAccess message={access.message} onRetry={() => setRetry((n) => n + 1)} onLogout={logout} />;
   if (access.status !== 'ok' || !data) return <LoadingScreen />;
@@ -2940,6 +3392,54 @@ export default function App() {
     must(await supabase.rpc('change_own_pin', { p_pin: pin }));
   }, 'Ihre PIN ist gespeichert.');
 
+  const saveDevice = (deviceId, form) => run(async () => {
+    must(await supabase.from('devices').update({
+      model: form.model.trim(),
+      category: form.category.trim() || null,
+      vendor: form.vendor.trim() || null,
+      risk_class: form.risk || null,
+      interval_months: form.interval,
+    }).eq('id', deviceId));
+  }, 'Gerät gespeichert.');
+
+  const removeDeviceFromDept = (deviceId) => run(async () => {
+    must(await supabase.from('department_devices').delete().eq('department_id', lineDept).eq('device_id', deviceId));
+  }, 'Gerät aus der Abteilung entfernt.');
+
+  // Dieses Gerät als Tablet der Station einrichten: Der Schlüssel bleibt nur auf diesem Gerät
+  const registerStation = async (deptIdForStation, label) => {
+    try {
+      const rows = must(await supabase.rpc('register_station', { p_department: deptIdForStation, p_label: label }));
+      const next = { id: rows[0].station_id, token: rows[0].station_token, label };
+      store.set(STATION_KEY, JSON.stringify(next));
+      store.remove(PERSNO_KEY);
+      setStation(next);
+      await reload();
+      notify('Eingerichtet. Beim nächsten Anmelden zeigt dieses Gerät die Namensliste der Station.');
+      return null;
+    } catch (err) {
+      const message = errorText(err);
+      notify(message, true);
+      return message;
+    }
+  };
+
+  const removeStation = (stationId) => run(async () => {
+    must(await supabase.rpc('remove_station', { p_station: stationId }));
+    const here = readStation();
+    if (here && here.id === stationId) {
+      store.remove(STATION_KEY);
+      setStation(null);
+    }
+  }, 'Tablet entfernt.');
+
+  const openReport = (title, departments) => setReport({
+    title,
+    departments,
+    staff: activePeople.filter((p) => departments.some((d) => d.id === p.dept)),
+    devices: data.devices,
+  });
+
   const addDepartment = (name) => run(async () => {
     must(await supabase.from('departments').insert({ tenant_id: tenantId, name }));
   }, 'Abteilung angelegt.');
@@ -3001,10 +3501,15 @@ export default function App() {
             onEditPerson={(p) => setPersonEdit({ person: p, mode: isAdmin ? 'admin' : 'line' })}
             onNewPerson={() => setPersonEdit({ person: null, mode: isAdmin ? 'admin' : 'line' })}
             onIssuePins={issuePins}
+            stations={data.stations}
+            onEditDevice={(d) => setDeviceEdit(d)}
+            onReport={() => openReport(deptById(lineDept).name, [deptById(lineDept)])}
+            onRegisterStation={registerStation}
+            onRemoveStation={removeStation}
           />
         )}
 
-        {view === 'qm' && <QmView staff={activePeople} devices={data.devices} log={data.log} onShowCert={showCert} />}
+        {view === 'qm' && <QmView staff={activePeople} devices={data.devices} log={data.log} onShowCert={showCert} onReport={() => openReport('alle Abteilungen', data.departments)} />}
 
         {view === 'admin' && (
           <AdminView
@@ -3050,6 +3555,19 @@ export default function App() {
       {ownPin && <OwnPinModal onSave={changeOwnPin} onClose={() => setOwnPin(false)} />}
 
       {pinList && <PinListModal list={pinList} code={data.tenant.code} onClose={() => setPinList(null)} />}
+
+      {deviceEdit && (
+        <DeviceModal
+          key={deviceEdit.id}
+          device={data.devices.find((d) => d.id === deviceEdit.id) || deviceEdit}
+          deptId={lineDept}
+          onSave={saveDevice}
+          onRemove={removeDeviceFromDept}
+          onClose={() => setDeviceEdit(null)}
+        />
+      )}
+
+      {report && <ReportModal {...report} onClose={() => setReport(null)} />}
     </div>
   );
 }
