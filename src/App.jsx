@@ -42,7 +42,7 @@ const LEAD_OPTIONS = [
   { days: 90, label: '3 Monate' },
   { days: 180, label: '6 Monate' },
 ];
-const DEFAULT_REMINDER = { email: '', leads: [90, 30], expired: true, missing: true };
+const DEFAULT_REMINDER = { email: '', leads: [90], expired: true, missing: true };
 const EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i;
 
 // Name der Klinik, erscheint auf der Startseite und auf dem Gerätepass
@@ -71,7 +71,7 @@ const FOCUS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:rin
 const ui = {
   btnPrimary: FOCUS + 'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[#17324D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0F2438] disabled:bg-slate-300',
   btnSecondary: FOCUS + 'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50',
-  link: FOCUS + 'inline-flex items-center gap-1.5 rounded text-sm font-semibold text-[#17324D] underline decoration-slate-300 underline-offset-4 hover:decoration-[#17324D]',
+  link: FOCUS + 'inline-flex items-center gap-1.5 rounded py-2.5 -my-2.5 text-sm font-semibold text-[#17324D] underline decoration-slate-300 underline-offset-4 hover:decoration-[#17324D]',
   input: 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base text-slate-900 focus:border-[#17324D] focus:outline-none focus:ring-2 focus:ring-[#17324D]/20 sm:text-sm',
   label: 'mb-1.5 block text-sm font-medium text-slate-700',
   panel: 'rounded-2xl border border-slate-200 bg-white',
@@ -341,6 +341,20 @@ const session = {
   isUnlocked: () => { try { return window.sessionStorage.getItem(SESSION_KEY) === '1'; } catch (e) { return false; } },
   unlock: () => { try { window.sessionStorage.setItem(SESSION_KEY, '1'); } catch (e) { /* ohne Speicher: nur bis zum Neuladen */ } },
   lock: () => { try { window.sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* nichts zu tun */ } },
+};
+
+// Eingaben der Vorführung bleiben bis zum Schliessen des Tabs erhalten, auch beim Neuladen.
+// Ist der Speicher voll oder gesperrt, läuft die Demo trotzdem, nur ohne Merken.
+const DEMO_KEY = 'geraetepass_demo_v1';
+const demoStore = {
+  load: () => {
+    try {
+      const data = JSON.parse(window.sessionStorage.getItem(DEMO_KEY) || 'null');
+      return data && Array.isArray(data.devices) && Array.isArray(data.staff) && Array.isArray(data.log) ? data : null;
+    } catch (e) { return null; }
+  },
+  save: (data) => { try { window.sessionStorage.setItem(DEMO_KEY, JSON.stringify(data)); } catch (e) { /* zu gross oder kein Speicher */ } },
+  clear: () => { try { window.sessionStorage.removeItem(DEMO_KEY); } catch (e) { /* nichts zu tun */ } },
 };
 
 // true auf breiten Bildschirmen (Desktop). Darunter werden Tabellen zu Karten.
@@ -770,7 +784,7 @@ function Segmented({ label, options, value, onChange }) {
 }
 
 // Fenster über der Seite. Auf dem Handy fährt es von unten herein. Schliesst mit Escape oder Klick daneben.
-function Modal({ label, onClose, children }) {
+function Modal({ label, onClose, children, wide }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -783,7 +797,7 @@ function Modal({ label, onClose, children }) {
         role="dialog"
         aria-modal="true"
         aria-label={label}
-        className="gp-sheet max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-6"
+        className={'gp-sheet max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 text-left shadow-2xl sm:rounded-2xl sm:p-6 ' + (wide ? 'sm:max-w-5xl' : 'sm:max-w-lg')}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between gap-4">
@@ -973,7 +987,7 @@ function RoleCard({ icon, title, subtitle, text, button, onStart, tag, children 
   );
 }
 
-function RoleSelect({ staff, selectedStaffId, onSelectStaff, onStart }) {
+function RoleSelect({ staff, selectedStaffId, onSelectStaff, onStart, changed, onReset }) {
   return (
     <div lang="de" className="flex min-h-screen bg-slate-100 px-4 py-8 text-slate-800 sm:px-6 sm:py-12 lg:items-center">
       <div className="mx-auto w-full max-w-6xl">
@@ -981,7 +995,7 @@ function RoleSelect({ staff, selectedStaffId, onSelectStaff, onStart }) {
           <Logo size="lg" />
           <div className="text-sm text-slate-500">
             <div className="flex items-center gap-1.5 font-medium text-emerald-700">
-              <Shield /> MepV & Swissmedic konform
+              <Shield /> Dokumentation nach MepV
             </div>
             <div className="mt-0.5">Mandant: {CLIENT_NAME} (Demo)</div>
           </div>
@@ -1027,11 +1041,18 @@ function RoleSelect({ staff, selectedStaffId, onSelectStaff, onStart }) {
             icon={<Building className="h-5 w-5" />}
             title="Qualitätsmanagement"
             subtitle="Klinik-Übersicht"
-            text="Übersicht über alle Abteilungen für Swissmedic- und ISO-Audits, nur lesend, mit jedem Schulungsnachweis im Detail."
+            text="Übersicht über alle Abteilungen für Audits und Inspektionen, nur lesend, mit jedem Schulungsnachweis im Detail und Export."
             button="QM-Übersicht öffnen"
             onStart={() => onStart('qm')}
           />
         </div>
+
+        {changed && (
+          <p className="mt-8 text-sm text-slate-500">
+            Die Eingaben dieser Vorführung bleiben bis zum Schliessen des Tabs erhalten.{' '}
+            <button type="button" onClick={onReset} className={ui.link}>Demo zurücksetzen</button>
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1646,9 +1667,9 @@ function ImportBar({ label, hint, error, onFile, onTemplate, children }) {
 
 /* ---------- 6.8 Stationsleitung: Geräteinventar ---------- */
 
-const INVENTORY_COLS = 'md:grid md:grid-cols-[1.4fr_1.6fr_1fr_1.4fr_1fr] md:gap-4';
+const INVENTORY_COLS = 'md:grid md:grid-cols-[1.4fr_1.6fr_1fr_1.4fr_1fr_8rem] md:gap-4';
 
-function InventoryTab({ deptId, devices, allDevices, onImport }) {
+function InventoryTab({ deptId, devices, allDevices, onImport, onEditDevice }) {
   const [onlyMedical, setOnlyMedical] = useState(true);
   const [draft, setDraft] = useState(null); // gelesene Datei, wartet auf Bestätigung
   const [error, setError] = useState('');
@@ -1714,7 +1735,7 @@ function InventoryTab({ deptId, devices, allDevices, onImport }) {
       </ImportBar>
 
       <div className={'hidden border-b border-slate-200 bg-slate-50 px-6 py-3 text-sm font-semibold text-slate-600 ' + INVENTORY_COLS}>
-        <span>Modell</span><span>Gerätetyp</span><span>Risikoklasse</span><span>Hersteller</span><span>Wiederholung</span>
+        <span>Modell</span><span>Gerätetyp</span><span>Risikoklasse</span><span>Hersteller</span><span>Wiederholung</span><span className="sr-only">Bearbeiten</span>
       </div>
       {visible.length === 0 ? (
         <p className="px-4 py-8 text-center text-sm text-slate-500 sm:px-6">Das Inventar dieser Abteilung ist noch leer. Importieren Sie eine Geräteliste.</p>
@@ -1735,6 +1756,9 @@ function InventoryTab({ deptId, devices, allDevices, onImport }) {
               <div className="text-slate-500 md:text-slate-600">
                 {needsTraining(d) ? 'alle ' + d.interval + ' Monate' : 'keine Schulungspflicht'}
               </div>
+              <button type="button" onClick={() => onEditDevice(d)} aria-label={d.model + ' bearbeiten'} className={ui.btnSecondary + ' mt-2 w-full sm:w-auto md:mt-0'}>
+                <Pencil /> Bearbeiten
+              </button>
             </li>
           ))}
         </ul>
@@ -2014,7 +2038,7 @@ const LINE_TABS = [
   { id: 'team', label: 'Team' },
 ];
 
-function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder }) {
+function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, preset, reminder, onTab, onDept, onToggleAssign, onShowCert, onStartTraining, onSaveTraining, onImportDevices, onImportStaff, onSaveReminder, onEditDevice, onReport }) {
   const [editMode, setEditMode] = useState(false);
   const [filter, setFilter] = useState([]); // in der Matrix gewählte Status (leer = alle Personen)
   const [showReminder, setShowReminder] = useState(false);
@@ -2042,6 +2066,9 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
             </select>
             <button type="button" onClick={() => setShowReminder(true)} className={ui.btnSecondary + ' mt-2 w-full'}>
               <Bell /> {reminder.email ? 'Erinnerungen: eingerichtet' : 'Erinnerungen einrichten'}
+            </button>
+            <button type="button" onClick={onReport} className={ui.btnSecondary + ' mt-2 w-full'}>
+              <Printer /> Bericht und Export
             </button>
           </div>
         </div>
@@ -2085,7 +2112,7 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
         <TrainingTab key={preset ? preset.key : 'leer'} devices={trainDevices} staffList={staffList} preset={preset} onSave={onSaveTraining} />
       )}
 
-      {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} />}
+      {tab === 'inventory' && <InventoryTab deptId={deptId} devices={deptDevices} allDevices={allDevices} onImport={onImportDevices} onEditDevice={onEditDevice} />}
 
       {tab === 'team' && <TeamTab deptId={deptId} staffList={staffList} allStaff={allStaff} devices={deptDevices} onImport={onImportStaff} />}
 
@@ -2105,13 +2132,16 @@ function LineView({ deptId, staffList, deptDevices, allStaff, allDevices, tab, p
 
 /* ---------- 6.12 QM: Klinik-Übersicht (nur lesen) ---------- */
 
-function QmView({ staff, devices, log, onShowCert }) {
+function QmView({ staff, devices, log, onShowCert, onReport }) {
   const [filter, setFilter] = useState([]); // gilt für alle Abteilungen gleichzeitig
 
   return (
     <div className="space-y-5">
       <div className={ui.panel + ' p-5 sm:p-6'}>
         <p className="mb-0.5 text-sm font-medium text-slate-500">Qualitätsmanagement</p>
+        <button type="button" onClick={onReport} className={ui.btnSecondary + ' mt-4'}>
+          <Printer /> Bericht und Export aller Nachweise
+        </button>
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Klinik-Übersicht</h1>
         <p className="mt-1 max-w-2xl text-sm text-slate-600">
           Alle Abteilungen im Überblick, nur lesend. Zuteilungen und Schulungen pflegen die Stationsleitungen.
@@ -2253,26 +2283,309 @@ function CertificateModal({ person, device, onClose, onRetrain }) {
 }
 
 
+/* ---------- 6.16 Gerät bearbeiten ---------- */
+
+const RISK_CHOICES = [
+  { value: '', label: 'Nicht angegeben' },
+  { value: 'I', label: 'Klasse I' },
+  { value: 'IIa', label: 'Klasse IIa' },
+  { value: 'IIb', label: 'Klasse IIb' },
+  { value: 'III', label: 'Klasse III' },
+  { value: NON_MEDICAL, label: 'Kein Medizinprodukt' },
+];
+
+function DeviceModal({ device, deptId, onSave, onRemove, onClose }) {
+  const [form, setForm] = useState({
+    model: device.model,
+    category: device.category,
+    vendor: device.vendor,
+    risk: device.risk,
+    interval: String(device.interval),
+  });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const change = (patch) => { setForm((prev) => ({ ...prev, ...patch })); setError(''); };
+  const otherDepts = device.depts.filter((id) => id !== deptId).length;
+  const knownRisk = RISK_CHOICES.some((c) => c.value === form.risk);
+
+  const save = async (e) => {
+    e.preventDefault();
+    const interval = form.risk === NON_MEDICAL ? 0 : parseInt(form.interval, 10);
+    if (!form.model.trim()) { setError('Bitte das Modell eingeben.'); return; }
+    if (Number.isNaN(interval) || interval < 0 || interval > 120) { setError('Das Intervall liegt zwischen 0 und 120 Monaten (0 = keine Schulungspflicht).'); return; }
+    setBusy(true);
+    const err = await onSave(device.id, { ...form, interval });
+    setBusy(false);
+    if (err) setError(err);
+    else onClose();
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    const err = await onRemove(device.id);
+    setBusy(false);
+    if (err) setError(err);
+    else onClose();
+  };
+
+  return (
+    <Modal label="Gerät bearbeiten" onClose={onClose}>
+      <h2 className="text-xl font-semibold tracking-tight text-slate-900">{device.model}</h2>
+      <p className="text-sm text-slate-500">
+        {otherDepts > 0
+          ? 'Steht auch in ' + plural(otherDepts, 'weiteren Abteilung', 'weiteren Abteilungen') + '. Änderungen gelten überall.'
+          : 'Änderungen werden im Protokoll festgehalten.'}
+      </p>
+
+      <form onSubmit={save} className="mt-5 space-y-4">
+        <div>
+          <label htmlFor="gp-d-model" className={ui.label}>Modell</label>
+          <input id="gp-d-model" value={form.model} onChange={(e) => change({ model: e.target.value })} className={ui.input} />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="gp-d-cat" className={ui.label}>Gerätetyp</label>
+            <input id="gp-d-cat" value={form.category} onChange={(e) => change({ category: e.target.value })} className={ui.input} />
+          </div>
+          <div>
+            <label htmlFor="gp-d-vendor" className={ui.label}>Hersteller</label>
+            <input id="gp-d-vendor" value={form.vendor} onChange={(e) => change({ vendor: e.target.value })} className={ui.input} />
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="gp-d-risk" className={ui.label}>Risikoklasse nach MepV</label>
+            <select id="gp-d-risk" value={form.risk} onChange={(e) => change({ risk: e.target.value, interval: e.target.value === NON_MEDICAL ? '0' : form.interval === '0' ? String(DEFAULT_INTERVAL) : form.interval })} className={ui.input}>
+              {!knownRisk && <option value={form.risk}>{form.risk}</option>}
+              {RISK_CHOICES.map((c) => <option key={c.label} value={c.value}>{c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="gp-d-interval" className={ui.label}>Wiederholung (Monate)</label>
+            <input id="gp-d-interval" type="number" min="0" max="120" inputMode="numeric" disabled={form.risk === NON_MEDICAL} value={form.interval} onChange={(e) => change({ interval: e.target.value })} className={ui.input + ' disabled:bg-slate-100 disabled:text-slate-400'} />
+            <p className="mt-1.5 text-xs text-slate-500">0 = keine Schulungspflicht</p>
+          </div>
+        </div>
+        {String(device.interval) !== String(form.risk === NON_MEDICAL ? 0 : form.interval) && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+            Ein neues Intervall verschiebt das «gültig bis» aller bisherigen Schulungen an diesem Gerät.
+          </p>
+        )}
+
+        {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800">{error}</p>}
+
+        <div className="flex flex-col gap-2 sm:flex-row-reverse">
+          <button type="submit" disabled={busy} className={ui.btnPrimary + ' sm:flex-1'}>Änderungen speichern</button>
+          <button type="button" onClick={onClose} className={ui.btnSecondary + ' min-h-[44px] sm:flex-1'}>Abbrechen</button>
+        </div>
+      </form>
+
+      <div className="mt-6 border-t border-slate-200 pt-5">
+        <h3 className="text-sm font-semibold text-slate-900">Nicht mehr auf dieser Station</h3>
+        {confirmRemove ? (
+          <div className="mt-2 space-y-3">
+            <p className="text-sm text-slate-600">
+              Das Gerät verschwindet aus Inventar und Matrix von {deptById(deptId).name}. Die Nachweise bleiben erhalten.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy} onClick={remove} className={ui.btnPrimary + ' bg-red-700 hover:bg-red-800'}>Ja, entfernen</button>
+              <button type="button" onClick={() => setConfirmRemove(false)} className={ui.btnSecondary}>Abbrechen</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setConfirmRemove(true)} className={ui.link + ' mt-1 min-h-[32px]'}>Aus dieser Abteilung entfernen</button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+/* ---------- 6.17 Bericht aller Nachweise (Druck/PDF und Tabelle) ---------- */
+
+// Eine Zeile pro Person und schulungspflichtigem Gerät, nach Abteilung
+function reportRows(departments, staff, devices) {
+  const rows = [];
+  departments.forEach((dept) => {
+    const deptDevices = devices.filter((d) => d.depts.includes(dept.id) && needsTraining(d));
+    staff.filter((p) => p.dept === dept.id).forEach((person) => {
+      deptDevices.filter((d) => person.assigned.includes(d.id)).forEach((device) => {
+        const records = person.certs[device.id] || [];
+        const latest = records[records.length - 1];
+        rows.push({ dept, person, device, latest, status: getStatus(device, records) });
+      });
+    });
+  });
+  return rows;
+}
+
+function downloadReportTable(rows, fileName) {
+  const head = ['Abteilung', 'Name', 'Personalnummer', 'Funktion', 'Gerät', 'Gerätetyp', 'Risikoklasse', 'Intervall (Monate)',
+    'Letzte Schulung', 'Art', 'Instruktor/in', 'Gültig bis', 'Status'];
+  const body = rows.map((r) => [
+    r.dept.name, r.person.name, r.person.persNo, r.person.role, r.device.model, r.device.category, r.device.risk,
+    String(r.device.interval), r.latest ? formatDate(r.latest.date) : '', r.latest ? r.latest.type : '',
+    r.latest ? r.latest.instructor : '', r.status.validUntil ? formatDate(r.status.validUntil) : '', STATUS[r.status.key].label,
+  ].map((v) => String(v == null ? '' : v)));
+  downloadTemplate(fileName, [head].concat(body));
+}
+
+function ReportModal({ title, departments, staff, devices, onClose }) {
+  const rows = reportRows(departments, staff, devices);
+  const today = formatDate(todayISO());
+
+  useEffect(() => {
+    document.documentElement.classList.add('gp-cert-open');
+    return () => document.documentElement.classList.remove('gp-cert-open');
+  }, []);
+
+  return (
+    <Modal label="Bericht Schulungsnachweise" onClose={onClose} wide>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Schulungsnachweise</h2>
+          <p className="text-sm text-slate-600">{CLIENT_NAME}, {title}, Stand {today}</p>
+        </div>
+        <div className="gp-no-print flex flex-wrap gap-2">
+          <button type="button" onClick={() => downloadReportTable(rows, 'schulungsnachweise-' + todayISO() + '.csv')} className={ui.btnSecondary}>
+            <Download /> Tabelle (CSV)
+          </button>
+          <button type="button" onClick={() => window.print()} className={ui.btnPrimary}>
+            <Printer /> Drucken oder als PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-slate-200 pt-4">
+        <Progress sum={summarize(staff, devices)} label="Stand" />
+      </div>
+
+      {departments.map((dept) => {
+        const deptRows = rows.filter((r) => r.dept.id === dept.id);
+        return (
+          <section key={dept.id} className="mt-6 break-inside-avoid-page">
+            <h3 className="mb-2 text-base font-semibold text-slate-900">{dept.name}</h3>
+            {deptRows.length === 0 ? (
+              <p className="text-sm text-slate-500">Keine schulungspflichtigen Zuteilungen.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b-2 border-slate-300 text-slate-600">
+                      <th className="py-1.5 pr-3 font-semibold">Name</th>
+                      <th className="py-1.5 pr-3 font-semibold">Gerät</th>
+                      <th className="py-1.5 pr-3 font-semibold">Klasse</th>
+                      <th className="py-1.5 pr-3 font-semibold">Letzte Schulung</th>
+                      <th className="py-1.5 pr-3 font-semibold">Instruktor/in</th>
+                      <th className="py-1.5 pr-3 font-semibold">Gültig bis</th>
+                      <th className="py-1.5 font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deptRows.map((r) => (
+                      <tr key={r.person.id + r.device.id} className="border-b border-slate-200 align-top">
+                        <td className="py-1.5 pr-3"><span className="font-medium text-slate-900">{r.person.name}</span>{r.person.persNo && <span className="block text-slate-500">{r.person.persNo}</span>}</td>
+                        <td className="py-1.5 pr-3">{r.device.model}<span className="block text-slate-500">{r.device.category}</span></td>
+                        <td className="py-1.5 pr-3">{r.device.risk || '–'}</td>
+                        <td className="py-1.5 pr-3">{r.latest ? formatDate(r.latest.date) : '–'}{r.latest && <span className="block text-slate-500">{r.latest.type}</span>}</td>
+                        <td className="py-1.5 pr-3">{r.latest ? r.latest.instructor : '–'}</td>
+                        <td className="py-1.5 pr-3">{r.status.validUntil ? formatDate(r.status.validUntil) : '–'}</td>
+                        <td className={'py-1.5 font-semibold ' + (r.status.key === 'valid' ? 'text-emerald-700' : r.status.key === 'dueSoon' ? 'text-amber-700' : 'text-red-700')}>{STATUS[r.status.key].label}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        );
+      })}
+
+      <p className="mt-6 text-xs text-slate-500">
+        Erstellt mit geraetepass.ch am {today}. Unterschriften und frühere Schulungen stehen im einzelnen Nachweis in der App.
+      </p>
+    </Modal>
+  );
+}
+
+
+/* ---------- Absicherung: unerwartete Fehler ---------- */
+
+// Fängt unerwartete Fehler ab, statt eine weisse Seite zu zeigen.
+class DemoErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error) {
+    console.error('geraetepass.ch Demo:', error);
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div lang="de" className="flex min-h-screen items-center justify-center bg-slate-100 p-4 text-slate-800">
+        <div className={ui.panel + ' w-full max-w-md space-y-5 p-6 sm:p-8'}>
+          <Logo size="lg" />
+          <h1 className="text-xl font-semibold text-slate-900">Da ist etwas schiefgelaufen</h1>
+          <p className="text-sm text-slate-600">Die Demo startet neu. Die Eingaben dieser Vorführung gehen dabei verloren.</p>
+          <button type="button" onClick={() => { demoStore.clear(); window.location.reload(); }} className={ui.btnPrimary + ' w-full'}>
+            Demo neu starten
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
+
 /* ==========================================================================
    7. APP – Zustand und Aktionen
    ========================================================================== */
 
 export default function App() {
+  return (
+    <DemoErrorBoundary>
+      <DemoApp />
+    </DemoErrorBoundary>
+  );
+}
+
+const ROLES = ['employee', 'line', 'qm'];
+
+function DemoApp() {
+  // Stand der Vorführung von vorher (nach Neuladen der Seite), sonst die Demo-Daten
+  const [saved] = useState(demoStore.load);
+  const pick = (key, ok, fallback) => (saved && ok(saved[key]) ? saved[key] : fallback);
+
   // Zugang und Navigation
   const [unlocked, setUnlocked] = useState(session.isUnlocked);
-  const [role, setRole] = useState(null); // null | 'employee' | 'line' | 'qm'
-  const [selectedStaffId, setSelectedStaffId] = useState('s1');
-  const [deptId, setDeptId] = useState('A');
-  const [lineTab, setLineTab] = useState('matrix');
+  const [role, setRole] = useState(() => pick('role', (r) => ROLES.includes(r), null)); // null | 'employee' | 'line' | 'qm'
+  const [selectedStaffId, setSelectedStaffId] = useState(() => pick('selectedStaffId', (id) => typeof id === 'string', 's1'));
+  const [deptId, setDeptId] = useState(() => pick('deptId', (id) => DEPARTMENTS.some((d) => d.id === id), 'A'));
+  const [lineTab, setLineTab] = useState(() => pick('lineTab', (t) => LINE_TABS.some((x) => x.id === t), 'matrix'));
   const [trainPreset, setTrainPreset] = useState(null); // vorbelegtes Schulungsformular
   const [certView, setCertView] = useState(null); // { personId, deviceId }
+  const [deviceEdit, setDeviceEdit] = useState(null);
+  const [report, setReport] = useState(null); // { title, departments, staff, devices }
 
   // Daten
-  const [devices, setDevices] = useState(INITIAL_DEVICES);
-  const [staff, setStaff] = useState(createDemoStaff);
-  const [reminders, setReminders] = useState({}); // Erinnerungs-Einstellungen pro Abteilung
-  const [log, setLog] = useState([]);
+  const [devices, setDevices] = useState(() => pick('devices', Array.isArray, INITIAL_DEVICES));
+  const [staff, setStaff] = useState(() => pick('staff', Array.isArray, null) || createDemoStaff());
+  const [reminders, setReminders] = useState(() => pick('reminders', (r) => r && typeof r === 'object', {})); // pro Abteilung
+  const [log, setLog] = useState(() => pick('log', Array.isArray, []));
   const [toast, setToast] = useState(null);
+
+  // Jede Änderung merken, damit ein versehentliches Neuladen die Vorführung nicht zurücksetzt
+  useEffect(() => {
+    demoStore.save({ role, selectedStaffId, deptId, lineTab, devices, staff, reminders, log });
+  }, [role, selectedStaffId, deptId, lineTab, devices, staff, reminders, log]);
 
   // Titel und Symbol im Browser-Tab
   useEffect(() => {
@@ -2310,7 +2623,22 @@ export default function App() {
 
   /* ----- Aktionen ----- */
   const unlock = () => { session.unlock(); setUnlocked(true); };
-  const lock = () => { session.lock(); setUnlocked(false); setRole(null); setCertView(null); };
+  const lock = () => { session.lock(); setUnlocked(false); setRole(null); setCertView(null); setDeviceEdit(null); setReport(null); };
+
+  // Alle Eingaben verwerfen und mit den Demo-Daten neu beginnen
+  const resetDemo = () => {
+    demoStore.clear();
+    setDevices(INITIAL_DEVICES);
+    setStaff(createDemoStaff());
+    setReminders({});
+    setLog([]);
+    setSelectedStaffId('s1');
+    setDeptId('A');
+    setLineTab('matrix');
+    setTrainPreset(null);
+    setCertView(null);
+    notify('Demo zurückgesetzt.');
+  };
 
   const changeDept = (id) => {
     setDeptId(id);
@@ -2361,9 +2689,10 @@ export default function App() {
 
     const names = staff.filter((p) => trainedIds.includes(p.id)).map((p) => p.name).join(', ');
     addLog(actor + ': Schulung erfasst, ' + device.model + ' am ' + formatDate(date) + ' durch ' + instructor + ' für ' + names);
-    notify('Schulung gespeichert.');
+    notify(trainedIds.length > 1 ? 'Schulung für ' + trainedIds.length + ' Personen gespeichert.' : 'Schulung gespeichert.');
     setTrainPreset(null);
     setLineTab('matrix');
+    window.scrollTo(0, 0); // Matrix von oben zeigen; ein zweites Tippen landet nicht auf einem Feld
   };
 
   // Importierte Geräte ins Inventar der aktuellen Abteilung aufnehmen
@@ -2395,14 +2724,53 @@ export default function App() {
     notify(settings.email ? 'Erinnerungen gespeichert.' : 'Erinnerungen ausgeschaltet.');
   };
 
+  const saveDevice = (deviceId, form) => {
+    const before = devices.find((d) => d.id === deviceId);
+    setDevices((prev) => prev.map((d) => (d.id !== deviceId ? d : {
+      ...d, model: form.model.trim(), category: form.category.trim(), vendor: form.vendor.trim(), risk: form.risk, interval: form.interval,
+    })));
+    const intervalNote = before.interval !== form.interval ? ' (Intervall ' + before.interval + ' → ' + form.interval + ' Monate)' : '';
+    addLog(actor + ': Gerät geändert, ' + form.model.trim() + intervalNote);
+    notify('Gerät gespeichert.');
+    return null;
+  };
+
+  // Gerät verlässt die Station: aus dem Inventar und den Zuteilungen der Station, Nachweise bleiben
+  const removeDeviceFromDept = (deviceId) => {
+    const device = devices.find((d) => d.id === deviceId);
+    setDevices((prev) => prev.map((d) => (d.id !== deviceId ? d : { ...d, depts: d.depts.filter((id) => id !== deptId) })));
+    setStaff((prev) => prev.map((p) => (p.dept !== deptId ? p : { ...p, assigned: p.assigned.filter((id) => id !== deviceId) })));
+    addLog(actor + ': Gerät aus ' + deptById(deptId).name + ' entfernt, ' + device.model);
+    notify('Gerät aus der Abteilung entfernt.');
+    return null;
+  };
+
+  const openReport = (title, departments) => setReport({
+    title,
+    departments,
+    staff: staff.filter((p) => departments.some((d) => d.id === p.dept)),
+    devices,
+  });
+
   const showCert = (personId, deviceId) => setCertView({ personId, deviceId });
   const closeCert = () => setCertView(null);
 
   /* ----- Anzeige ----- */
   if (!unlocked) return <PasswordGate onUnlock={unlock} />;
 
+  const toastView = toast && (
+    <div key={toast.key} role="status" className="fixed bottom-4 left-4 right-4 z-[60] flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-lg sm:left-auto sm:right-6 sm:bottom-6">
+      <Check className="h-4 w-4 text-emerald-400" /> {toast.text}
+    </div>
+  );
+
   if (!role) {
-    return <RoleSelect staff={staff} selectedStaffId={selectedStaffId} onSelectStaff={setSelectedStaffId} onStart={setRole} />;
+    return (
+      <>
+        <RoleSelect staff={staff} selectedStaffId={selectedStaffId} onSelectStaff={setSelectedStaffId} onStart={setRole} changed={log.length > 0} onReset={resetDemo} />
+        {toastView}
+      </>
+    );
   }
 
   const certPerson = certView ? staff.find((p) => p.id === certView.personId) : null;
@@ -2412,8 +2780,8 @@ export default function App() {
     <div lang="de" className="flex min-h-screen flex-col bg-slate-100 text-slate-800">
       <Header
         role={role}
-        onRole={(next) => { setRole(next); setCertView(null); }}
-        onRoleSelect={() => { setRole(null); setCertView(null); }}
+        onRole={(next) => { setRole(next); setCertView(null); setReport(null); }}
+        onRoleSelect={() => { setRole(null); setCertView(null); setReport(null); }}
         onLock={lock}
       />
 
@@ -2442,17 +2810,28 @@ export default function App() {
             onImportDevices={importDevices}
             onImportStaff={importStaff}
             onSaveReminder={saveReminder}
+            onEditDevice={(d) => setDeviceEdit(d)}
+            onReport={() => openReport(deptById(deptId).name, [deptById(deptId)])}
           />
         )}
 
-        {role === 'qm' && <QmView staff={staff} devices={devices} log={log} onShowCert={showCert} />}
+        {role === 'qm' && <QmView staff={staff} devices={devices} log={log} onShowCert={showCert} onReport={() => openReport('alle Abteilungen', DEPARTMENTS)} />}
       </main>
 
-      {toast && (
-        <div role="status" className="fixed bottom-4 left-4 right-4 z-50 flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-lg sm:left-auto sm:right-6 sm:bottom-6">
-          <Check className="h-4 w-4 text-emerald-400" /> {toast.text}
-        </div>
+      {toastView}
+
+      {deviceEdit && (
+        <DeviceModal
+          key={deviceEdit.id}
+          device={devices.find((d) => d.id === deviceEdit.id) || deviceEdit}
+          deptId={deptId}
+          onSave={saveDevice}
+          onRemove={removeDeviceFromDept}
+          onClose={() => setDeviceEdit(null)}
+        />
       )}
+
+      {report && <ReportModal {...report} onClose={() => setReport(null)} />}
 
       {certPerson && certDevice && (
         <CertificateModal
